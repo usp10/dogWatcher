@@ -369,35 +369,43 @@ class TelegramCommandsBot:
             self.send_message(chat_id, f"❌ {symbol} 不在持仓列表中")
     
     def handle_reboot(self, chat_id):
-        """处理重启命令"""
+        """处理重启命令 - 仅支持Linux系统"""
         try:
             # 发送确认消息
             self.send_message(chat_id, "🔄 正在执行重启操作...\n这将停止当前运行的脚本，更新代码并重新启动")
             logger.info(f"收到重启命令，正在执行重启脚本")
             
+            # 仅使用Linux版本的重启脚本
+            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'restart_all.sh')
+            
+            # 确保脚本有执行权限
+            subprocess.run(['chmod', '+x', script_path], check=False)
+            
             # 创建一个临时的重启脚本，增加延迟以确保消息发送完成
-            temp_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_reboot.bat')
+            temp_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_reboot.sh')
             
             # 构建临时重启脚本内容，增加5秒延迟确保消息完全发送
             temp_script_content = """
-@echo off
+#!/bin/bash
 
-rem 等待5秒，确保所有Telegram消息都已发送完成
-echo 等待5秒确保消息发送完成...
-ping 127.0.0.1 -n 6 > nul
+# 等待5秒，确保所有Telegram消息都已发送完成
+echo "等待5秒确保消息发送完成..."
+sleep 5
 
-rem 执行原始的重启脚本
-call "restart_all.bat"
+# 执行原始的重启脚本
+bash "$(dirname "$0")/restart_all.sh"
 """
             
             # 写入临时脚本
             with open(temp_script_path, 'w', encoding='utf-8') as f:
                 f.write(temp_script_content)
             
-            # 使用start命令异步执行，避免阻塞机器人进程
-            # 使用cmd.exe /c来确保在新窗口中执行
-            subprocess.Popen(['cmd.exe', '/c', 'start', 'cmd.exe', '/c', temp_script_path], shell=False)
-            logger.info(f"已启动延迟重启脚本: {temp_script_path}")
+            # 确保临时脚本有执行权限
+            subprocess.run(['chmod', '+x', temp_script_path], check=False)
+            
+            # 使用nohup和&确保脚本在后台运行
+            subprocess.Popen(['nohup', temp_script_path, '&'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            logger.info(f"已启动Linux延迟重启脚本: {temp_script_path}")
             
             # 给用户发送最终确认消息
             final_message = "✅ 重启脚本已启动执行！\n请稍等片刻，脚本将在后台完成停止、更新和重启操作。\n你将很快收到新的机器人消息。"
