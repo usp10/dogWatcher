@@ -22,10 +22,38 @@ class TelegramCommandsBot:
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{token}"
         self.holdings_file = "crypto_holdings.json"
+        # 重启时间记录文件
+        self.reboot_time_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.reboot_time_record')
         self.session = self.create_session()  # 先创建会话
         self.load_holdings()
         
+        # 重启冷却时间（秒）
+        self.REBOOT_COOLDOWN = 60  # 1分钟冷却时间
+        # 从文件加载上次重启时间
+        self.last_reboot_time = self._load_last_reboot_time()
+        
         # 已禁用重启标志检查，避免无限重启循环
+        
+    def _load_last_reboot_time(self):
+        """从文件加载上次重启时间"""
+        try:
+            if os.path.exists(self.reboot_time_file):
+                with open(self.reboot_time_file, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    if content:
+                        return float(content)
+        except Exception as e:
+            logger.error(f"加载重启时间记录失败: {e}")
+        return 0
+        
+    def _save_last_reboot_time(self, timestamp):
+        """保存重启时间到文件"""
+        try:
+            with open(self.reboot_time_file, 'w', encoding='utf-8') as f:
+                f.write(str(timestamp))
+            logger.info(f"已保存重启时间记录: {timestamp}")
+        except Exception as e:
+            logger.error(f"保存重启时间记录失败: {e}")
         
     def create_session(self):
         """创建一个带有重试机制的会话"""
@@ -376,10 +404,22 @@ class TelegramCommandsBot:
             self.send_message(chat_id, f"❌ {symbol} 不在持仓列表中")
     
     def handle_reboot(self, chat_id):
-        """处理重启命令 - 仅支持Linux系统"""
+        """处理重启命令 - 仅支持Linux系统，带文件存储的冷却时间限制"""
         try:
-            # 发送确认消息
-            self.send_message(chat_id, "🔄 正在执行重启操作...\n这将停止当前运行的脚本，更新代码并重新启动")
+            # 检查冷却时间（从文件加载的时间）
+            current_time = time.time()
+            if current_time - self.last_reboot_time < self.REBOOT_COOLDOWN:
+                remaining_time = int(self.REBOOT_COOLDOWN - (current_time - self.last_reboot_time))
+                self.send_message(chat_id, f"⏰ 重启功能冷却中，请在 {remaining_time} 秒后重试")
+                logger.info(f"重启命令被冷却时间限制阻止")
+                return
+            
+            # 更新并保存重启时间到文件
+            self.last_reboot_time = current_time
+            self._save_last_reboot_time(current_time)
+            
+            # 发送简单的确认消息
+            self.send_message(chat_id, "🔄 正在执行重启操作...")
             logger.info(f"收到重启命令，正在执行重启脚本")
             
             # 仅使用Linux版本的重启脚本
@@ -388,25 +428,17 @@ class TelegramCommandsBot:
             # 确保脚本有执行权限
             subprocess.run(['chmod', '+x', script_path], check=False)
             
-            # 优化的方式执行重启脚本，确保完全脱离主进程
-            # 使用preexec_fn=os.setsid创建新的进程组
-            # 将输出重定向到/dev/null避免任何可能的阻塞
+            # 直接调用脚本
             subprocess.Popen(
-                ['nohup', 'bash', script_path, '&'],
+                ['bash', script_path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
-                shell=False,
-                preexec_fn=os.setsid if hasattr(os, 'setsid') else None
+                shell=False
             )
             logger.info(f"已启动Linux重启脚本: {script_path}")
             
-            # 确保不会卡住，立即返回
-            
-            # 给用户发送最终确认消息
-            final_message = "✅ 重启脚本已启动执行！\n请稍等片刻，脚本将在后台完成停止、更新和重启操作。"
-            self.send_message(chat_id, final_message)
-            logger.info("已发送重启确认消息")
+            # 不再发送额外消息
             
         except Exception as e:
             logger.error(f"执行重启脚本失败: {e}")
