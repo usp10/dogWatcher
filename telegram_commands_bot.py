@@ -22,11 +22,10 @@ class TelegramCommandsBot:
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{token}"
         self.holdings_file = "crypto_holdings.json"
-        self.session = self.create_session()  # 先创建会话，用于可能的欢迎消息发送
+        self.session = self.create_session()  # 先创建会话
         self.load_holdings()
         
-        # 检查是否有重启标志，如有则发送欢迎消息
-        self.check_restart_flag()
+        # 已禁用重启标志检查，避免无限重启循环
         
     def create_session(self):
         """创建一个带有重试机制的会话"""
@@ -50,38 +49,9 @@ class TelegramCommandsBot:
         return session
     
     def check_restart_flag(self):
-        """检查重启标志，如果存在则发送欢迎消息"""
-        try:
-            restart_flag_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.restart_flag')
-            if os.path.exists(restart_flag_path):
-                # 读取重启标志文件中的聊天ID
-                with open(restart_flag_path, 'r', encoding='utf-8') as f:
-                    restart_chat_id = f.read().strip()
-                
-                # 发送欢迎消息
-                welcome_message = """
-🎉 机器人已成功重启！
-
-✅ 系统已完成以下操作：
-• 更新代码库
-• 重启所有服务
-• 恢复监控功能
-
-🔍 当前状态：
-• 机器人已在线并正常工作
-• 持仓数据已加载
-• 命令处理功能已就绪
-
-ℹ️ 可以使用 /help 查看可用的命令列表
-                    """
-                self.send_message(restart_chat_id, welcome_message)
-                logger.info(f"已向聊天ID {restart_chat_id} 发送重启欢迎消息")
-                
-                # 删除重启标志文件，避免下次启动再次触发
-                os.remove(restart_flag_path)
-                logger.info("已删除重启标志文件")
-        except Exception as e:
-            logger.error(f"检查重启标志时出错: {e}")
+        """检查重启标志方法 - 当前已禁用"""
+        # 为避免无限重启循环，已禁用重启标志检查功能
+        logger.info("重启标志检查功能已禁用")
     
     def load_holdings(self):
         """加载持仓数据"""
@@ -418,11 +388,6 @@ class TelegramCommandsBot:
             # 确保脚本有执行权限
             subprocess.run(['chmod', '+x', script_path], check=False)
             
-            # 创建重启标记文件，用于重启后发送欢迎消息
-            restart_flag_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.restart_flag')
-            with open(restart_flag_path, 'w', encoding='utf-8') as f:
-                f.write(str(chat_id))  # 保存发起重启的聊天ID
-            
             # 优化的方式执行重启脚本，确保完全脱离主进程
             # 使用preexec_fn=os.setsid创建新的进程组
             # 将输出重定向到/dev/null避免任何可能的阻塞
@@ -439,7 +404,7 @@ class TelegramCommandsBot:
             # 确保不会卡住，立即返回
             
             # 给用户发送最终确认消息
-            final_message = "✅ 重启脚本已启动执行！\n请稍等片刻，脚本将在后台完成停止、更新和重启操作。\n重启完成后，你将收到欢迎消息。"
+            final_message = "✅ 重启脚本已启动执行！\n请稍等片刻，脚本将在后台完成停止、更新和重启操作。"
             self.send_message(chat_id, final_message)
             logger.info("已发送重启确认消息")
             
