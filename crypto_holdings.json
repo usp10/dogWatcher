@@ -1,0 +1,20 @@
+{
+  "COAIUSDT": {
+    "added_at": "2025-10-13 00:03:55",
+    "position_type": "long",
+    "status": "持仓",
+    "entry_price": 8.0596
+  },
+  "GIGGLEUSDT": {
+    "added_at": "2025-10-13 00:04:09",
+    "position_type": "long",
+    "status": "持仓",
+    "entry_price": 146.61
+  },
+  "ZEREBROUSDT": {
+    "added_at": "2025-10-13 01:02:34",
+    "position_type": "long",
+    "status": "持仓",
+    "entry_price": 0.0334
+  }
+}

@@ -2,6 +2,7 @@ import logging
 import json
 import os
 import time
+import subprocess
 import requests
 import urllib3
 from datetime import datetime
@@ -367,6 +368,49 @@ class TelegramCommandsBot:
         else:
             self.send_message(chat_id, f"❌ {symbol} 不在持仓列表中")
     
+    def handle_reboot(self, chat_id):
+        """处理重启命令"""
+        try:
+            # 发送确认消息
+            self.send_message(chat_id, "🔄 正在执行重启操作...\n这将停止当前运行的脚本，更新代码并重新启动")
+            logger.info(f"收到重启命令，正在执行重启脚本")
+            
+            # 创建一个临时的重启脚本，增加延迟以确保消息发送完成
+            temp_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_reboot.bat')
+            
+            # 构建临时重启脚本内容，增加5秒延迟确保消息完全发送
+            temp_script_content = """
+@echo off
+
+rem 等待5秒，确保所有Telegram消息都已发送完成
+echo 等待5秒确保消息发送完成...
+ping 127.0.0.1 -n 6 > nul
+
+rem 执行原始的重启脚本
+call "restart_all.bat"
+"""
+            
+            # 写入临时脚本
+            with open(temp_script_path, 'w', encoding='utf-8') as f:
+                f.write(temp_script_content)
+            
+            # 使用start命令异步执行，避免阻塞机器人进程
+            # 使用cmd.exe /c来确保在新窗口中执行
+            subprocess.Popen(['cmd.exe', '/c', 'start', 'cmd.exe', '/c', temp_script_path], shell=False)
+            logger.info(f"已启动延迟重启脚本: {temp_script_path}")
+            
+            # 给用户发送最终确认消息
+            final_message = "✅ 重启脚本已启动执行！\n请稍等片刻，脚本将在后台完成停止、更新和重启操作。\n你将很快收到新的机器人消息。"
+            self.send_message(chat_id, final_message)
+            logger.info("已发送重启确认消息，等待消息发送完成...")
+            
+            # 给消息发送留出足够时间
+            time.sleep(2)
+            
+        except Exception as e:
+            logger.error(f"执行重启脚本失败: {e}")
+            self.send_message(chat_id, f"❌ 执行重启操作时出错: {str(e)}")
+    
     def handle_help(self, chat_id):
         """处理帮助命令"""
         help_text = "📖 **命令帮助**\n\n"
@@ -377,6 +421,7 @@ class TelegramCommandsBot:
         help_text += "`sf` - 显示重点关注列表\n"
         help_text += "`af 币种名称` - 添加币种到重点关注列表，无需输入USDT后缀\n"
         help_text += "`df 币种名称` - 从重点关注列表中删除币种，无需输入USDT后缀\n"
+        help_text += "`reboot` - 重启系统，更新代码并重新启动所有脚本\n"
         help_text += "`help` - 显示此帮助信息"
         
         self.send_message(chat_id, help_text)
@@ -533,6 +578,8 @@ class TelegramCommandsBot:
         elif command == "df" or command == "delfocus":
             args = parts[1] if len(parts) > 1 else ""
             self.handle_delfocus(chat_id, args)
+        elif command == "reboot":
+            self.handle_reboot(chat_id)
         elif command == "help":
             self.handle_help(chat_id)
     
