@@ -423,9 +423,20 @@ class TelegramCommandsBot:
             with open(restart_flag_path, 'w', encoding='utf-8') as f:
                 f.write(str(chat_id))  # 保存发起重启的聊天ID
             
-            # 直接执行重启脚本，使用nohup和&确保脚本在后台运行
-            subprocess.Popen(['nohup', script_path, '&'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # 优化的方式执行重启脚本，确保完全脱离主进程
+            # 使用preexec_fn=os.setsid创建新的进程组
+            # 将输出重定向到/dev/null避免任何可能的阻塞
+            subprocess.Popen(
+                ['nohup', 'bash', script_path, '&'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                shell=False,
+                preexec_fn=os.setsid if hasattr(os, 'setsid') else None
+            )
             logger.info(f"已启动Linux重启脚本: {script_path}")
+            
+            # 确保不会卡住，立即返回
             
             # 给用户发送最终确认消息
             final_message = "✅ 重启脚本已启动执行！\n请稍等片刻，脚本将在后台完成停止、更新和重启操作。\n重启完成后，你将收到欢迎消息。"
