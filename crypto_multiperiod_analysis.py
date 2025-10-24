@@ -165,67 +165,239 @@ class CryptoAnalyzer:
         
         return macd_line, signal_line, histogram
     
-    def calculate_kdj(self, data, n=9, m1=3, m2=3):
-        """计算KDJ指标"""
-        # 计算RSV
-        low_n = data['low'].rolling(window=n, min_periods=1).min()
-        high_n = data['high'].rolling(window=n, min_periods=1).max()
-        rsv = (data['close'] - low_n) / (high_n - low_n) * 100
-        
-        # 计算K、D、J线
-        k = rsv.ewm(com=m1-1, adjust=False).mean()
-        d = k.ewm(com=m2-1, adjust=False).mean()
-        j = 3 * k - 2 * d
-        
-        return k, d, j
+    # 删除KDJ相关函数，使用MACD交叉替代
     
-    def detect_kdj_cross(self, k_series, d_series):
-        """检测KDJ金叉死叉，精确识别上一个小时的金叉/死叉，金叉在50以下，死叉在50以上"""
+    def detect_macd_cross(self, macd_line, signal_line):
+        """检测MACD金叉死叉，基础版本
+        
+        Args:
+            macd_line: MACD线数据
+            signal_line: 信号线数据
+            
+        Returns:
+            str: 'golden_cross'(金叉), 'death_cross'(死叉) 或 None
+        """
         # 检查是否有足够的数据
-        if len(k_series) < 3:  # 需要至少3个数据点来确认交叉发生在上一个完整小时
+        if len(macd_line) < 3:  # 需要至少3个数据点来确认交叉发生在上一个完整周期
             return None
         
-        # 检查金叉（K线上穿D线）- 确保交叉发生在上一个完整小时且KDJ值<50
-        # 即倒数第二个K线完成了金叉动作
-        if (k_series.iloc[-3] < d_series.iloc[-3] and 
-            k_series.iloc[-2] > d_series.iloc[-2] and
-            k_series.iloc[-2] < 50):  # 金叉必须在50以下
+        # 检查金叉（MACD线上穿信号线）
+        if (macd_line.iloc[-3] < signal_line.iloc[-3] and 
+            macd_line.iloc[-2] > signal_line.iloc[-2]):
             return 'golden_cross'
         
-        # 检查死叉（K线下穿D线）- 确保交叉发生在上一个完整小时且KDJ值>50
-        elif (k_series.iloc[-3] > d_series.iloc[-3] and 
-              k_series.iloc[-2] < d_series.iloc[-2] and
-              k_series.iloc[-2] > 50):  # 死叉必须在50以上
+        # 检查死叉（MACD线下穿信号线）
+        elif (macd_line.iloc[-3] > signal_line.iloc[-3] and 
+              macd_line.iloc[-2] < signal_line.iloc[-2]):
             return 'death_cross'
         
         return None
+        
+    def check_buy_signal(self, macd_line, signal_line, price_data=None):
+        """检查买入信号：
+        1. 检测到1h刚才出现了金叉A，获取收盘价a
+        2. 寻找前一个金叉B，获取收盘价b
+        3. 金叉B的DIF值必须低于0轴下，否则不符合
+        4. 判断A的dif在0轴上还是0轴下：
+           - 如果在0轴上，则需要a>b
+           - 如果0轴下则需要a< b
+        
+        Args:
+            macd_line: MACD线数据
+            signal_line: 信号线数据
+            price_data: 价格数据，包含收盘价信息
+            
+        Returns:
+            bool: 是否满足买入信号条件
+        """
+        # 检查是否刚发生金叉
+        current_cross = self.detect_macd_cross(macd_line, signal_line)
+        if current_cross != 'golden_cross':
+            return False
+        
+        # 检查是否提供了价格数据
+        if price_data is None or 'close' not in price_data:
+            return False
+        
+        # 获取金叉A的收盘价a
+        if len(price_data) < 2:
+            return False
+        
+        close_price_a = price_data['close'].iloc[-2]  # 金叉A的收盘价
+        macd_value_a = macd_line.iloc[-2]  # 金叉A的DIF值
+        
+        # 寻找上一个金叉B，其DIF值必须在0轴下
+        last_golden_cross_idx = None
+        
+        # 从当前位置向前查找
+        for i in range(len(macd_line) - 4, 0, -1):
+            # 检查是否在i位置发生金叉
+            cross_at_i = (macd_line.iloc[i-1] < signal_line.iloc[i-1] and 
+                         macd_line.iloc[i] > signal_line.iloc[i])
+            
+            # 检查金叉B的DIF值是否在0轴下
+            if cross_at_i and macd_line.iloc[i] < 0:
+                last_golden_cross_idx = i
+                break
+        
+        # 如果找不到符合条件的上一个金叉B，不满足条件
+        if last_golden_cross_idx is None:
+            return False
+        
+        # 获取金叉B的收盘价b
+        if last_golden_cross_idx >= len(price_data):
+            return False
+        
+        close_price_b = price_data['close'].iloc[last_golden_cross_idx]
+        
+        # 判断A的dif位置并应用相应的价格条件
+        if macd_value_a > 0:  # A在0轴上
+            return close_price_a > close_price_b
+        else:  # A在0轴下
+            return close_price_a < close_price_b
+    
+    def check_sell_signal(self, macd_line, signal_line, price_data=None):
+        """检查卖出信号：
+        1. 检测到1h刚才出现了死叉A，获取收盘价a
+        2. 寻找前一个死叉B，获取收盘价b
+        3. 死叉B的DIF值必须高于0轴上，否则不符合
+        4. 判断A的dif在0轴上还是0轴下：
+           - 如果在0轴下，则需要a<b
+           - 如果0轴上则需要a> b
+        
+        Args:
+            macd_line: MACD线数据
+            signal_line: 信号线数据
+            price_data: 价格数据，包含收盘价信息
+            
+        Returns:
+            bool: 是否满足卖出信号条件
+        """
+        # 检查是否刚发生死叉
+        current_cross = self.detect_macd_cross(macd_line, signal_line)
+        if current_cross != 'death_cross':
+            return False
+        
+        # 检查是否提供了价格数据
+        if price_data is None or 'close' not in price_data:
+            return False
+        
+        # 获取死叉A的收盘价a
+        if len(price_data) < 2:
+            return False
+        
+        close_price_a = price_data['close'].iloc[-2]  # 死叉A的收盘价
+        macd_value_a = macd_line.iloc[-2]  # 死叉A的DIF值
+        
+        # 寻找上一个死叉B，其DIF值必须在0轴上
+        last_death_cross_idx = None
+        
+        # 从当前位置向前查找
+        for i in range(len(macd_line) - 4, 0, -1):
+            # 检查是否在i位置发生死叉
+            cross_at_i = (macd_line.iloc[i-1] > signal_line.iloc[i-1] and 
+                         macd_line.iloc[i] < signal_line.iloc[i])
+            
+            # 检查死叉B的DIF值是否在0轴上
+            if cross_at_i and macd_line.iloc[i] > 0:
+                last_death_cross_idx = i
+                break
+        
+        # 如果找不到符合条件的上一个死叉B，不满足条件
+        if last_death_cross_idx is None:
+            return False
+        
+        # 获取死叉B的收盘价b
+        if last_death_cross_idx >= len(price_data):
+            return False
+        
+        close_price_b = price_data['close'].iloc[last_death_cross_idx]
+        
+        # 判断A的dif位置并应用相应的价格条件
+        if macd_value_a < 0:  # A在0轴下
+            return close_price_a < close_price_b
+        else:  # A在0轴上
+            return close_price_a > close_price_b
+    
+    def check_macd_golden_cross_rule(self, macd_line, signal_line):
+        """
+        检查MACD金叉是否符合新规则：
+        1. 寻找上一个0轴以下的金叉B
+        2. 寻找A和B中间MACD值的最大值C
+        3. 如果A的值小于C的五分之一，则符合条件
+        
+        Args:
+            macd_line: MACD线数据
+            signal_line: 信号线数据
+            
+        Returns:
+            bool: 是否符合新规则
+        """
+        # 确保有足够的数据点
+        if len(macd_line) < 50:
+            return False
+        
+        # 检查是否刚发生金叉
+        current_cross = self.detect_macd_cross(macd_line, signal_line)
+        if current_cross != 'golden_cross':
+            return False
+        
+        # 金叉A的值
+        macd_value_a = macd_line.iloc[-2]  # 使用交叉发生位置的值
+        
+        # 寻找上一个0轴以下的金叉B
+        last_below_zero_golden_cross_idx = None
+        
+        # 从当前位置向前查找
+        for i in range(len(macd_line) - 4, 0, -1):
+            # 检查是否在i位置发生金叉（使用与detect_macd_cross相同的逻辑）
+            cross_at_i = (macd_line.iloc[i-1] < signal_line.iloc[i-1] and 
+                         macd_line.iloc[i] > signal_line.iloc[i])
+            
+            # 检查金叉时MACD值是否在0轴以下
+            if cross_at_i and macd_line.iloc[i] <= 0:
+                last_below_zero_golden_cross_idx = i
+                break
+        
+        # 如果没有找到上一个0轴以下的金叉，返回False
+        if last_below_zero_golden_cross_idx is None:
+            return False
+        
+        # 计算A和B之间MACD线的最大值C
+        macd_values_between = macd_line.iloc[last_below_zero_golden_cross_idx+1:-2]
+        if len(macd_values_between) == 0:
+            return False
+        
+        max_macd_value_c = macd_values_between.max()
+        
+        # 检查A的值是否小于C的五分之一
+        return macd_value_a < (max_macd_value_c / 5)
+    
+    # KDJ交叉检测函数已删除
     
     def analyze_signal(self, main_period_data, four_x_period_data):
         """分析交易信号"""
         # 计算指标
-        main_k, main_d, main_j = self.calculate_kdj(main_period_data)
         main_macd, main_signal, main_hist = self.calculate_macd(main_period_data)
         four_x_macd, four_x_signal, four_x_hist = self.calculate_macd(four_x_period_data)
         
         # 判断大周期MACD方向（多头：dif > dea，空头：dif < dea）
         four_x_macd_direction = 'bullish' if four_x_macd.iloc[-1] > four_x_signal.iloc[-1] else 'bearish'
         
-        # 检测KDJ交叉
-        kdj_cross = self.detect_kdj_cross(main_k, main_d)
+        # 检测MACD交叉
+        macd_cross = self.detect_macd_cross(main_macd, main_signal)
         
         # 生成信号
         signal = None
-        if four_x_macd_direction == 'bullish' and kdj_cross == 'golden_cross':
-            signal = '买入信号：大周期多头+小周期KDJ金叉'
-        elif four_x_macd_direction == 'bearish' and kdj_cross == 'death_cross':
-            signal = '卖出信号：大周期空头+小周期KDJ死叉'
+        if four_x_macd_direction == 'bullish' and macd_cross == 'golden_cross':
+            signal = '买入信号：大周期多头+小周期MACD金叉'
+        elif four_x_macd_direction == 'bearish' and macd_cross == 'death_cross':
+            signal = '卖出信号：大周期空头+小周期MACD死叉'
         
         return {
             'four_x_macd_direction': four_x_macd_direction,
             'four_x_macd_value': four_x_macd.iloc[-1],
-            'kdj_cross': kdj_cross,
-            'main_k_last': main_k.iloc[-1],
-            'main_d_last': main_d.iloc[-1],
+            'macd_cross': macd_cross,
             'signal': signal
         }
     
@@ -251,70 +423,87 @@ class CryptoAnalyzer:
     def analyze_single_currency(self, symbol):
         """分析单个币种，返回分析结果"""
         try:
-            # 计算最近7天涨幅
-            seven_day_growth = self.calculate_7day_growth(symbol)
+            # 大周期是4h，小周期是1h
+            four_hour_interval = '4h'  # 大周期
+            hourly_interval = '1h'  # 小周期
             
-            # 根据7天涨幅动态选择周期
-            # 如果最近7天涨幅大于30%，则使用15分钟KDJ和1小时MACD
-            if seven_day_growth > 30:
-                macd_interval = '1h'  # MACD判断周期改为1小时
-                kdj_interval = '15m'  # KDJ金叉周期改为15分钟
-                print(f"{symbol} 7天涨幅{seven_day_growth:.2f}% > 30%，使用15分钟KDJ和1小时MACD")
-            else:
-                # 否则使用原方法：1小时KDJ和4小时MACD
-                macd_interval = '4h'
-                kdj_interval = '1h'
+            # 获取4小时周期数据（大周期）
+            four_hour_data = self.get_futures_klines(symbol, four_hour_interval, limit=50)
+            # 获取1小时周期数据（小周期）
+            hourly_data = self.get_futures_klines(symbol, hourly_interval, limit=100)
             
-            # 获取相应周期的数据
-            macd_data = self.get_futures_klines(symbol, macd_interval, limit=50)
-            kdj_data = self.get_futures_klines(symbol, kdj_interval, limit=50)
+            if four_hour_data is None or hourly_data is None:
+                return symbol, None, None, None, None, None, None, None, hourly_interval
             
-            if macd_data is None or kdj_data is None:
-                return symbol, None, None, None, None, None, None, None, None
+            if len(four_hour_data) < 10 or len(hourly_data) < 50:
+                return symbol, None, None, None, None, None, None, None, hourly_interval
             
-            # 计算MACD
-            macd_line, macd_signal, macd_hist = self.calculate_macd(macd_data)
+            # 计算大周期4小时MACD
+            four_hour_macd_line, four_hour_macd_signal, _ = self.calculate_macd(four_hour_data)
+            # 计算小周期1小时MACD
+            hourly_macd_line, hourly_macd_signal, _ = self.calculate_macd(hourly_data)
             
-            # 确定MACD状态（多头左侧/右侧、空头左侧/右侧）
-            current_dif = macd_line.iloc[-1]
-            current_dea = macd_signal.iloc[-1]
+            # 判断大周期MACD方向（多头：dif > dea，空头：dif < dea）
+            four_hour_macd_bullish = four_hour_macd_line.iloc[-1] > four_hour_macd_signal.iloc[-1]
+            macd_status = "多头" if four_hour_macd_bullish else "空头"
             
-            if current_dif > current_dea:
-                if current_dif > 0:
-                    macd_status = "多头右侧"
-                else:
-                    macd_status = "多头左侧"
-            else:
-                if current_dif < 0:
-                    macd_status = "空头右侧"
-                else:
-                    macd_status = "空头左侧"
+            # 检测小周期1小时MACD交叉
+            macd_cross = self.detect_macd_cross(hourly_macd_line, hourly_macd_signal)
+            is_golden_cross = macd_cross == 'golden_cross'
             
-            # 计算KDJ
-            kdj_k, kdj_d, kdj_j = self.calculate_kdj(kdj_data)
-            kdj_cross = self.detect_kdj_cross(kdj_k, kdj_d)
-            is_golden_cross = kdj_cross == 'golden_cross'
+            # 获取大周期最新的MACD值（dif值）
+            four_hour_macd_value = four_hour_macd_line.iloc[-1]
             
-            # 如果检测到金叉，额外验证一下确保K线形态
+            # 检查买入信号：暂时忽略大周期判断，只使用小周期的新MACD判定法
+            is_buy_signal = False
             if is_golden_cross:
-                # 打印额外信息用于调试
-                if len(kdj_k) > 3 and len(kdj_d) > 3:
-                    print(f"  {symbol}检测到可能的金叉: K[-3]={kdj_k.iloc[-3]:.2f}, D[-3]={kdj_d.iloc[-3]:.2f}, "
-                          f"K[-2]={kdj_k.iloc[-2]:.2f}, D[-2]={kdj_d.iloc[-2]:.2f}")
+                # 应用新的买入信号规则，传入价格数据
+                is_buy_signal = self.check_buy_signal(hourly_macd_line, hourly_macd_signal, hourly_data)
             
-            # 返回详细信息，添加KDJ值和使用的KDJ周期
-            k_value = kdj_k.iloc[-2] if len(kdj_k) > 1 else None
-            d_value = kdj_d.iloc[-2] if len(kdj_d) > 1 else None
-            # 返回MACD值、状态等信息，添加使用的KDJ周期
-            return symbol, macd_status, is_golden_cross, macd_line.iloc[-1], kdj_cross, current_dif > current_dea, k_value, d_value, kdj_interval
+            # 检查卖出信号：暂时忽略大周期判断，只使用小周期的新MACD判定法
+            is_sell_signal = False
+            if macd_cross == 'death_cross':
+                # 应用新的卖出信号规则，传入价格数据
+                is_sell_signal = self.check_sell_signal(hourly_macd_line, hourly_macd_signal, hourly_data)
+            
+            # 注释：保留大周期判断逻辑，后续可能需要使用
+            # if four_hour_macd_bullish and is_golden_cross:
+            #     is_buy_signal = self.check_buy_signal(hourly_macd_line, hourly_macd_signal, hourly_data)
+            # if not four_hour_macd_bullish and macd_cross == 'death_cross':
+            #     is_sell_signal = self.check_sell_signal(hourly_macd_line, hourly_macd_signal, hourly_data)
+            
+            # 返回分析结果，保持原有返回格式以便execute_filter处理
+            return symbol, macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish, is_buy_signal, is_sell_signal, hourly_interval
+            
+            # 计算MACD交叉
+            macd_cross = self.detect_macd_cross(macd_line, macd_signal)
+            is_golden_cross = macd_cross == 'golden_cross'
+            is_death_cross = macd_cross == 'death_cross'
+            
+            # 检查买入信号
+            buy_signal = self.check_buy_signal(macd_line, macd_signal)
+            
+            # 检查卖出信号
+            sell_signal = self.check_sell_signal(macd_line, macd_signal)
+            
+            # 打印调试信息
+            if buy_signal:
+                print(f"  {symbol}满足买入信号: MACD[-2]={macd_line.iloc[-2]:.4f}, MACD[-3]={macd_line.iloc[-3]:.4f}")
+            elif sell_signal:
+                print(f"  {symbol}满足卖出信号: MACD[-2]={macd_line.iloc[-2]:.4f}, MACD[-3]={macd_line.iloc[-3]:.4f}")
+            
+            # 返回结果，保持原有结构以便兼容
+            # 简化macd_status，只使用'多头'/'空头'表示MACD当前方向
+            macd_status = "多头" if macd_line.iloc[-1] > 0 else "空头"
+            return symbol, macd_status, is_golden_cross, macd_line.iloc[-1], macd_cross, macd_line.iloc[-1] > 0, None, None, interval
         except Exception as e:
             print(f"分析{symbol}时出错: {e}")
             return symbol, None, None, None, None, None, None, None
     
     def check_4h_bullish_1h_goldencross(self, symbol):
-        """检查特定信号：4小时MACD状态（多头左侧/右侧、空头左侧/右侧）和1小时KDJ金叉/死叉"""
-        symbol, macd_status, is_golden_cross, four_hour_macd_value, kdj_cross, four_hour_macd_bullish = self.analyze_single_currency(symbol)
-        return macd_status, is_golden_cross, four_hour_macd_value, kdj_cross, four_hour_macd_bullish
+        """检查特定信号：大周期MACD状态和小周期MACD交叉"""
+        symbol, macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish = self.analyze_single_currency(symbol)
+        return macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish
     
     def plot_chart(self, symbol, main_interval, main_data, four_x_data, analysis_result):
         """绘制图表"""
@@ -323,30 +512,18 @@ class CryptoAnalyzer:
             plt.figure(figsize=(15, 12))
             
             # 计算指标
-            main_k, main_d, main_j = self.calculate_kdj(main_data)
             main_macd, main_signal, main_hist = self.calculate_macd(main_data)
             four_x_macd, four_x_signal, four_x_hist = self.calculate_macd(four_x_data)
             
             # 绘制价格图
-            plt.subplot(4, 1, 1)
+            plt.subplot(3, 1, 1)
             plt.plot(main_data['open_time'], main_data['close'], label='收盘价')
             plt.title(f'{symbol} - {self.interval_map[main_interval]["name"]}价格')
             plt.grid(True)
             plt.legend()
             
-            # 绘制主周期KDJ
-            plt.subplot(4, 1, 2)
-            plt.plot(main_data['open_time'], main_k, label='K线')
-            plt.plot(main_data['open_time'], main_d, label='D线')
-            plt.plot(main_data['open_time'], main_j, label='J线')
-            plt.axhline(y=80, color='r', linestyle='--')
-            plt.axhline(y=20, color='g', linestyle='--')
-            plt.title(f'KDJ指标 - {self.interval_map[main_interval]["name"]}')
-            plt.grid(True)
-            plt.legend()
-            
             # 绘制主周期MACD
-            plt.subplot(4, 1, 3)
+            plt.subplot(3, 1, 2)
             plt.plot(main_data['open_time'], main_macd, label='MACD')
             plt.plot(main_data['open_time'], main_signal, label='信号线')
             plt.bar(main_data['open_time'], main_hist, label='柱状图', alpha=0.5)
@@ -357,7 +534,7 @@ class CryptoAnalyzer:
             
             # 绘制4倍周期MACD
             four_x_interval = self.interval_map[main_interval]['four_x']
-            plt.subplot(4, 1, 4)
+            plt.subplot(3, 1, 3)
             plt.plot(four_x_data['open_time'], four_x_macd, label='MACD')
             plt.plot(four_x_data['open_time'], four_x_signal, label='信号线')
             plt.bar(four_x_data['open_time'], four_x_hist, label='柱状图', alpha=0.5)
@@ -368,14 +545,15 @@ class CryptoAnalyzer:
             
             # 添加分析结果文本
             text_str = f"分析结果:\n"
-            text_str += f"大周期MACD方向: {'多头' if analysis_result['four_x_macd_direction'] == 'bullish' else '空头'} (值: {analysis_result['four_x_macd_value']:.4f})\n"
-            if analysis_result['kdj_cross'] == 'golden_cross':
-                text_str += "本周期KDJ: 金叉\n"
-            elif analysis_result['kdj_cross'] == 'death_cross':
-                text_str += "本周期KDJ: 死叉\n"
+            text_str += f"大周期MACD方向: {'多头' if analysis_result.get('four_x_macd_direction') == 'bullish' else '空头'} (值: {analysis_result.get('four_x_macd_value', 0):.4f})\n"
+            macd_cross = analysis_result.get('macd_cross')
+            if macd_cross == 'golden_cross':
+                text_str += "本周期MACD: 金叉\n"
+            elif macd_cross == 'death_cross':
+                text_str += "本周期MACD: 死叉\n"
             else:
-                text_str += f"本周期KDJ: K={analysis_result['main_k_last']:.2f}, D={analysis_result['main_d_last']:.2f}\n"
-            if analysis_result['signal']:
+                text_str += "本周期MACD: 无交叉\n"
+            if analysis_result.get('signal'):
                 text_str += f"交易信号: {analysis_result['signal']}"
             else:
                 text_str += "交易信号: 暂无"
@@ -391,14 +569,24 @@ class CryptoAnalyzer:
     def print_analysis_table(self, analysis_results):
         """打印分析结果表格"""
         print("\n" + "="*100)
-        print(f"{'币种':<10} {'周期':<10} {'大周期MACD方向':<15} {'本周期KDJ状态':<15} {'交易信号':<40}")
+        print(f"{'币种':<10} {'周期':<10} {'大周期MACD方向':<15} {'MACD交叉状态':<15} {'交易信号':<40}")
         print("="*100)
         
         for symbol, result in analysis_results.items():
-            if result['signal']:
-                print(f"{symbol:<10} {result['interval']:<10} {result['direction']:<15} {result['kdj_status']:<15} {result['signal']:<40}")
-            else:
-                print(f"{symbol:<10} {result['interval']:<10} {result['direction']:<15} {result['kdj_status']:<15} {'暂无':<40}")
+            # 检查result的类型，如果是元组则转换为字典格式
+            if isinstance(result, tuple) and len(result) >= 9:
+                symbol, macd_status, is_golden_cross, macd_value, macd_cross, macd_bullish, _, _, cross_interval = result
+                # 构建字典格式
+                result_dict = {
+                    'signal': '买入信号' if is_golden_cross and macd_bullish else '卖出信号' if not is_golden_cross and not macd_bullish else None,
+                    'interval': cross_interval,
+                    'direction': '多头' if macd_bullish else '空头',
+                    'macd_cross_status': '金叉' if macd_cross == 'golden_cross' else '死叉' if macd_cross == 'death_cross' else '无交叉'
+                }
+                if result_dict['signal']:
+                    print(f"{symbol:<10} {result_dict['interval']:<10} {result_dict['direction']:<15} {result_dict['macd_cross_status']:<15} {result_dict['signal']:<40}")
+                else:
+                    print(f"{symbol:<10} {result_dict['interval']:<10} {result_dict['direction']:<15} {result_dict['macd_cross_status']:<15} {'暂无':<40}")
         print("="*100)
     
     def send_dingtalk_notification(self, message, title="加密货币分析提醒"):
@@ -456,7 +644,7 @@ class CryptoAnalyzer:
     def run(self):
         """运行主程序"""
         print("欢迎使用币安合约币种筛选工具")
-        print("功能：筛选USDT合约成交额前100名币种，按成交额排序，检测4小时MACD状态（多头左侧/右侧、空头左侧/右侧）和1小时KDJ信号")
+        print("功能：筛选USDT合约成交额前100名币种，按成交额排序，检测4小时MACD状态（多头左侧/右侧、空头左侧/右侧）和1小时MACD交叉信号")
         print("每小时整点自动运行一次，并将结果推送到电报")
         print("每5分钟检查一次持仓盈亏率")
         
@@ -836,7 +1024,7 @@ class CryptoAnalyzer:
                 if symbol in analysis_results:
                     result = analysis_results[symbol]
                     if result is not None and len(result) >= 9:
-                        _, macd_status, is_golden_cross, _, kdj_cross, macd_bullish, _, _, kdj_interval = result
+                        _, macd_status, is_golden_cross, _, macd_cross, macd_bullish, _, _, cross_interval = result
                         
                         # 获取持仓类型
                         position_type = position_info.get('position_type', 'long')
@@ -845,22 +1033,11 @@ class CryptoAnalyzer:
                         macd_bullish_state = macd_bullish
                         macd_bearish_state = not macd_bullish
                         
-                        # 检测KDJ死叉
-                        is_death_cross = kdj_cross == 'death_cross'
+                        # 检测MACD死叉
+                        is_death_cross = macd_cross == 'death_cross'
                         
-                        # 根据7天涨幅动态选择周期
-                        seven_day_growth = self.calculate_7day_growth(symbol)
-                        if seven_day_growth > 30:
-                            macd_interval = '1h'  # MACD判断周期改为1小时
-                            # 从分析结果中获取KDJ周期
-                            if kdj_interval == '15m':
-                                print(f"持仓检查 {symbol} 7天涨幅{seven_day_growth:.2f}% > 30%，使用15分钟KDJ和1小时MACD")
-                        else:
-                            # 否则使用原方法：1小时KDJ和4小时MACD
-                            macd_interval = '4h'
-                            # 从分析结果中获取KDJ周期
-                            if kdj_interval == '1h':
-                                print(f"持仓检查 {symbol} 7天涨幅{seven_day_growth:.2f}% ≤ 30%，使用1小时KDJ和4小时MACD")
+                        # 统一使用4小时MACD判断和1小时MACD交叉
+                        macd_interval = '4h'  # MACD判断周期
                         
                         # 获取相应周期的MACD数据
                         macd_data = self.get_futures_klines(symbol, macd_interval, limit=50)
@@ -872,32 +1049,24 @@ class CryptoAnalyzer:
                             current_dif = 0
                             current_dea = 0
                         
-                        # 获取相应周期的KDJ数据
-                        kdj_data = self.get_futures_klines(symbol, kdj_interval, limit=50)
-                        if kdj_data is not None:
-                            kdj_k, kdj_d, _ = self.calculate_kdj(kdj_data)
-                        else:
-                            kdj_k = None
-                            kdj_d = None
-                        
                         # 初始化信号变量
                         signal_type = None
                         trigger_condition = None
                         
                         # 多单持仓的止盈止损条件
-                        if position_type == 'long' and kdj_k is not None and len(kdj_k) > 2:
+                        if position_type == 'long':
                             if is_death_cross:
                                 signal_type = "🚨 止盈止损"
-                                trigger_condition = f"{kdj_interval} KDJ死叉 (K={kdj_k.iloc[-2]:.2f})"
+                                trigger_condition = f"{cross_interval} MACD死叉"
                             elif macd_bearish_state:
                                 signal_type = "⚠️  趋势转空"
                                 trigger_condition = f"{macd_interval} MACD空头 (DIF={current_dif:.4f}, DEA={current_dea:.4f})"
                         
                         # 空单持仓的止盈止损条件
-                        elif position_type == 'short' and kdj_k is not None and len(kdj_k) > 2:
+                        elif position_type == 'short':
                             if is_golden_cross:
                                 signal_type = "🚨 止盈止损"
-                                trigger_condition = f"{kdj_interval} KDJ金叉 (K={kdj_k.iloc[-2]:.2f})"
+                                trigger_condition = f"{cross_interval} MACD金叉"
                             elif macd_bullish_state:
                                 signal_type = "⚠️  趋势转多"
                                 trigger_condition = f"{macd_interval} MACD多头 (DIF={current_dif:.4f}, DEA={current_dea:.4f})"
@@ -938,20 +1107,17 @@ class CryptoAnalyzer:
         for i, (symbol, volume) in enumerate(top_currencies[:10], 1):
             print(f"   {i}. {symbol}: {volume:.2f} USDT")
         
-        print("\n2. 开始分析每个币种的MACD和KDJ信号...")
-        print("   注意：最近7天涨幅>30%的币种将使用15分钟KDJ和1小时MACD")
-        print("   其他币种将使用1小时KDJ和4小时MACD")
+        print("\n2. 开始分析每个币种的MACD信号...")
+        print("   统一使用1小时MACD交叉和4小时MACD进行分析")
         # 打印表头
         print("="*110)
-        print(f"{'币种':<15} {'MACD状态':<15} {'MACD值':<12} {'KDJ状态':<15} {'信号':<25}")
+        print(f"{'币种':<15} {'MACD状态':<15} {'MACD值':<12} {'MACD交叉状态':<15} {'信号':<25}")
         print("="*110)
         
         # 统计变量
         total_analyzed = 0
-        bullish_left_count = 0  # 多头左侧计数
-        bullish_right_count = 0  # 多头右侧计数
-        bearish_left_count = 0  # 空头左侧计数
-        bearish_right_count = 0  # 空头右侧计数
+        bullish_count = 0  # 多头计数
+        bearish_count = 0  # 空头计数
         golden_cross_count = 0
         death_cross_count = 0
         buy_signal_count = 0
@@ -977,8 +1143,8 @@ class CryptoAnalyzer:
                 print(f"分析进度: {i}/{len(top_currencies)}", end='\r')
                 
                 try:
-                    # 更新变量接收以匹配新增的KDJ值和KDJ周期返回
-                    symbol, macd_status, is_golden_cross, four_hour_macd_value, kdj_cross, four_hour_macd_bullish, k_value, d_value, kdj_interval = future.result()
+                    # 接收分析结果，包含是否满足买入/卖出信号
+                    symbol, macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval = future.result()
                     
                     if four_hour_macd_bullish is None:
                         # 无法获取数据
@@ -988,176 +1154,115 @@ class CryptoAnalyzer:
                     with lock:
                         total_analyzed += 1
                         
-                        # 判断是否为主流币种或在重点关注列表中
-                        # 重点关注列表中的币种和默认的BTC、ETH、SOL都能保留左侧信号
-                        is_focus_coin = symbol in self.focus_list or symbol in self.default_focus_coins
-                        
-                        # 预处理左侧信号
-                        original_macd_status = macd_status
-                        if macd_status in ["多头左侧", "空头左侧"] and not is_focus_coin:
-                            # 不在重点关注列表中的币种，左侧信号转为右侧
-                            if macd_status == "多头左侧":
-                                macd_status = "多头右侧"
-                            else:
-                                macd_status = "空头右侧"
-                        
-                        is_death_cross = kdj_cross == 'death_cross'
+                        is_death_cross = macd_cross == 'death_cross'
                         if is_golden_cross:
                             golden_cross_count += 1
                         elif is_death_cross:
                             death_cross_count += 1
                         
-                        # 获取MACD指标值
-                        current_dif = four_hour_macd_value
-                        # 判断MACD是否为多头状态
-                        macd_bullish = current_dif > 0
-                        
-                        # 更新统计（在判断信号后更新）
-                        
                         # 判断信号类型
                         signal = "不满足"
-                        # 判断是否为主流币种或在重点关注列表中
-                        is_focus_coin = symbol in self.focus_list or symbol in self.default_focus_coins
-                        # 只有右侧信号或重点关注列表中的左侧信号才能作为买入/卖出信号
-                        if macd_bullish and is_golden_cross and (macd_status == "多头右侧" or (macd_status == "多头左侧" and is_focus_coin)):
-                            signal = "买入信号"
+                        
+                        # 使用analyze_single_currency中计算好的信号
+                        if is_buy_signal:
+                            signal = "买入信号：大周期多头+小周期金叉"
                             buy_signal_count += 1
-                            # 使用从方法返回的KDJ值
-                            kdj_values = f"K={k_value:.2f}" if k_value is not None else "N/A"
-                            # 存储原始K值用于排序
-                            buy_signal_symbols.append((symbol, macd_status, kdj_values, k_value))
-                        elif not macd_bullish and is_death_cross and (macd_status == "空头右侧" or (macd_status == "空头左侧" and is_focus_coin)):
-                            signal = "卖出信号"
+                            buy_signal_symbols.append((symbol, macd_status, "MACD金叉", four_hour_macd_value))
+                        elif is_sell_signal:
+                            signal = "卖出信号：大周期空头+小周期死叉"
                             sell_signal_count += 1
-                            # 使用从方法返回的KDJ值 - 死叉时也只输出K值
-                            kdj_values = f"K={k_value:.2f}" if k_value is not None else "N/A"
-                            # 存储原始K值用于排序
-                            sell_signal_symbols.append((symbol, macd_status, kdj_values, k_value))
+                            sell_signal_symbols.append((symbol, macd_status, "MACD死叉", four_hour_macd_value))
                         
                         # 更新统计计数
-                        if macd_status == "多头左侧":
-                            bullish_left_count += 1
-                        elif macd_status == "多头右侧":
-                            bullish_right_count += 1
-                        elif macd_status == "空头左侧":
-                            bearish_left_count += 1
-                        else:  # 空头右侧
-                            bearish_right_count += 1
+                        if macd_status == "多头":
+                            bullish_count += 1
+                        else:  # 空头
+                            bearish_count += 1
                     
                     # 格式化输出
-                    kdj_status = "金叉" if kdj_cross == 'golden_cross' else "死叉" if kdj_cross == 'death_cross' else "无交叉"
+                    macd_cross_status = "金叉" if macd_cross == 'golden_cross' else "死叉" if macd_cross == 'death_cross' else "无交叉"
                     
-                    # 存储分析结果，包含KDJ周期信息
-                    analysis_results[symbol] = (symbol, macd_status, is_golden_cross, four_hour_macd_value, kdj_cross, macd_status in ['多头左侧', '多头右侧'], k_value, d_value, kdj_interval)
+                    # 存储分析结果，包含MACD交叉周期信息
+                    analysis_results[symbol] = (symbol, macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval)
                     
-                    # 打印详细信息
-                    print(f"{symbol:<15} {macd_status:<15} {four_hour_macd_value:<12.4f} {kdj_status:<15} {signal:<25}")
+                    # 打印详细信息 - 只有在满足买入/卖出信号时才显示交叉信息
+                    if signal == "买入信号" or signal == "卖出信号":
+                        print(f"{symbol:<15} {macd_status:<15} {four_hour_macd_value:<12.4f} {macd_cross_status:<15} {signal:<25}")
+                    else:
+                        # 不满足信号条件时，不显示交叉状态
+                        print(f"{symbol:<15} {macd_status:<15} {four_hour_macd_value:<12.4f} {'-':<15} {signal:<25}")
                     
                 except Exception as e:
                     print(f"处理{symbol}时出错: {e}")
         
         print("="*140)
         print(f"\n分析完成！总共分析了{total_analyzed}个币种")
-        print(f"4小时MACD多头左侧币种: {bullish_left_count}个")
-        print(f"4小时MACD多头右侧币种: {bullish_right_count}个")
-        print(f"4小时MACD空头左侧币种: {bearish_left_count}个")
-        print(f"4小时MACD空头右侧币种: {bearish_right_count}个")
-        print(f"1小时KDJ金叉币种: {golden_cross_count}个")
-        print(f"1小时KDJ死叉币种: {death_cross_count}个")
+        print(f"1小时MACD多头币种: {bullish_count}个")
+        print(f"1小时MACD空头币种: {bearish_count}个")
+        print(f"MACD金叉币种: {golden_cross_count}个")
+        print(f"MACD死叉币种: {death_cross_count}个")
         print(f"买入信号币种: {buy_signal_count}个")
         print(f"卖出信号币种: {sell_signal_count}个")
         
-        # 按KDJ周期分类信号列表
+        # 按MACD交叉周期分类信号列表
         # 多头信号分类
-        buy_signal_15m = []  # 15分钟KDJ的买入信号
-        buy_signal_1h = []   # 1小时KDJ的买入信号
-        # 空头信号分类
-        sell_signal_15m = [] # 15分钟KDJ的卖出信号
-        sell_signal_1h = []  # 1小时KDJ的卖出信号
+        buy_signal_1h = []  # 1小时MACD交叉的买入信号
         
-        # 重新构建包含KDJ周期的信号列表
+        sell_signal_1h = [] # 1小时MACD交叉的卖出信号
+        
+        # 重新构建包含MACD交叉周期的信号列表
         for symbol, _, _, _ in buy_signal_symbols:
             if symbol in analysis_results:
                 result = analysis_results[symbol]
                 if len(result) >= 9:
-                    kdj_interval = result[8]
-                    for i, (s, status, kdj, k_val) in enumerate(buy_signal_symbols):
+                    cross_interval = result[8]
+                    for i, (s, status, macd, m_val) in enumerate(buy_signal_symbols):
                         if s == symbol:
-                            if kdj_interval == '15m':
-                                buy_signal_15m.append((symbol, status, kdj, k_val, kdj_interval))
-                            else:
-                                buy_signal_1h.append((symbol, status, kdj, k_val, kdj_interval))
+                            # 统一使用1小时MACD交叉
+                            buy_signal_1h.append((symbol, status, macd, m_val, cross_interval))
                             break
-        
+
         for symbol, _, _, _ in sell_signal_symbols:
             if symbol in analysis_results:
                 result = analysis_results[symbol]
                 if len(result) >= 9:
-                    kdj_interval = result[8]
-                    for i, (s, status, kdj, k_val) in enumerate(sell_signal_symbols):
+                    cross_interval = result[8]
+                    for i, (s, status, macd, m_val) in enumerate(sell_signal_symbols):
                         if s == symbol:
-                            if kdj_interval == '15m':
-                                sell_signal_15m.append((symbol, status, kdj, k_val, kdj_interval))
-                            else:
-                                sell_signal_1h.append((symbol, status, kdj, k_val, kdj_interval))
+                            # 统一使用1小时MACD交叉
+                            sell_signal_1h.append((symbol, status, macd, m_val, cross_interval))
                             break
         
         # 对分类后的信号列表进行排序
-        buy_signal_15m.sort(key=lambda x: x[3] if x[3] is not None else float('inf'))
         buy_signal_1h.sort(key=lambda x: x[3] if x[3] is not None else float('inf'))
-        sell_signal_15m.sort(key=lambda x: x[3] if x[3] is not None else float('-inf'), reverse=True)
         sell_signal_1h.sort(key=lambda x: x[3] if x[3] is not None else float('-inf'), reverse=True)
         
         # 生成钉钉通知内容
         dingtalk_content = f"### 加密货币信号提醒 - {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
         
-        # 分别输出15分钟和1小时KDJ的买入信号
-        if buy_signal_15m or buy_signal_1h:
+        # 输出1小时MACD交叉的买入信号
+        if buy_signal_1h:
             print("\n⚠️  满足条件的买入信号币种：")
+            print("\n1小时MACD买入信号：")
+            for symbol, status, macd, _, _ in buy_signal_1h:
+                print(f"   • {symbol} ({status}) - {macd}")
             
-            if buy_signal_15m:
-                print("\n15分钟KDJ买入信号：")
-                for symbol, status, kdj, _, _ in buy_signal_15m:
-                    print(f"   • {symbol} ({status}) - {kdj}")
-                
-                # 添加到钉钉通知
-                dingtalk_content += "#### 🟢 15分钟KDJ多头信号：\n"
-                for symbol, macd_status, kdj, _, _ in buy_signal_15m:
-                    dingtalk_content += f"- {symbol} ({macd_status}) - KDJ: {kdj}\n"
-            
-            if buy_signal_1h:
-                print("\n1小时KDJ买入信号：")
-                for symbol, status, kdj, _, _ in buy_signal_1h:
-                    print(f"   • {symbol} ({status}) - {kdj}")
-                
-                # 添加到钉钉通知
-                dingtalk_content += "\n#### 🟢 1小时KDJ多头信号：\n"
-                for symbol, macd_status, kdj, _, _ in buy_signal_1h:
-                    dingtalk_content += f"- {symbol} ({macd_status}) - KDJ: {kdj}\n"
+            # 添加到钉钉通知
+            dingtalk_content += "#### 🟢 1小时MACD多头信号：\n"
+            for symbol, macd_status, macd, _, _ in buy_signal_1h:
+                dingtalk_content += f"- {symbol} ({macd_status}) - MACD: {macd}\n"
         
-        # 分别输出15分钟和1小时KDJ的卖出信号
-        if sell_signal_15m or sell_signal_1h:
+        # 输出1小时MACD交叉的卖出信号
+        if sell_signal_1h:
             print("\n⚠️  满足条件的卖出信号币种：")
+            print("\n1小时MACD卖出信号：")
+            for symbol, status, macd, _, _ in sell_signal_1h:
+                print(f"   • {symbol} ({status}) - {macd}")
             
-            if sell_signal_15m:
-                print("\n15分钟KDJ卖出信号：")
-                for symbol, status, kdj, _, _ in sell_signal_15m:
-                    print(f"   • {symbol} ({status}) - {kdj}")
-                
-                # 添加到钉钉通知
-                dingtalk_content += "\n#### 🔴 15分钟KDJ空头信号：\n"
-                for symbol, macd_status, kdj, _, _ in sell_signal_15m:
-                    dingtalk_content += f"- {symbol} ({macd_status}) - KDJ: {kdj}\n"
-            
-            if sell_signal_1h:
-                print("\n1小时KDJ卖出信号：")
-                for symbol, status, kdj, _, _ in sell_signal_1h:
-                    print(f"   • {symbol} ({status}) - {kdj}")
-                
-                # 添加到钉钉通知
-                dingtalk_content += "\n#### 🔴 1小时KDJ空头信号：\n"
-                for symbol, macd_status, kdj, _, _ in sell_signal_1h:
-                    dingtalk_content += f"- {symbol} ({macd_status}) - KDJ: {kdj}\n"
+            # 添加到钉钉通知
+            dingtalk_content += "\n#### 🔴 1小时MACD空头信号：\n"
+            for symbol, macd_status, macd, _, _ in sell_signal_1h:
+                dingtalk_content += f"- {symbol} ({macd_status}) - MACD: {macd}\n"
         
         if buy_signal_symbols or sell_signal_symbols:
             pass
@@ -1238,9 +1343,9 @@ class CryptoAnalyzer:
         
         # 获取数据
         four_hour_data = self.get_futures_klines(symbol, '4h', limit=100)
-        hourly_data = self.get_futures_klines(symbol, '1h', limit=200)
+        one_hour_data = self.get_futures_klines(symbol, '1h', limit=200)
         
-        if four_hour_data is None or hourly_data is None:
+        if four_hour_data is None or one_hour_data is None:
             print("无法获取数据，无法生成图表")
             return
         
@@ -1249,77 +1354,72 @@ class CryptoAnalyzer:
             plt.figure(figsize=(16, 14))
             
             # 1. 4小时价格图
-            plt.subplot(4, 2, 1)
+            plt.subplot(3, 1, 1)
             plt.plot(four_hour_data['open_time'], four_hour_data['close'], label='收盘价')
             plt.title(f'{symbol} - 4小时价格')
             plt.grid(True)
             plt.legend()
             plt.xticks(rotation=45)
             
-            # 2. 4小时MACD
+            # 1. 合并4小时价格和MACD到同一子图
+            ax1 = plt.subplot(3, 1, 1)
+            ax1.plot(four_hour_data['open_time'], four_hour_data['close'], label='收盘价', color='blue')
+            ax1.set_title(f'{symbol} - 4小时价格和MACD')
+            ax1.set_ylabel('价格')
+            ax1.grid(True)
+            ax1.legend(loc='upper left')
+            ax1.tick_params(axis='x', rotation=45)
+            
+            # 在同一子图添加MACD
+            ax2 = ax1.twinx()
             four_hour_macd, four_hour_signal, four_hour_hist = self.calculate_macd(four_hour_data)
-            plt.subplot(4, 2, 2)
-            plt.plot(four_hour_data['open_time'], four_hour_macd, label='MACD')
-            plt.plot(four_hour_data['open_time'], four_hour_signal, label='信号线')
-            plt.bar(four_hour_data['open_time'], four_hour_hist, label='柱状图', alpha=0.5)
-            plt.axhline(y=0, color='r', linestyle='-', linewidth=1)
-            plt.title(f'{symbol} - 4小时MACD')
-            plt.grid(True)
-            plt.legend()
-            plt.xticks(rotation=45)
+            ax2.plot(four_hour_data['open_time'], four_hour_macd, label='MACD', color='green')
+            ax2.plot(four_hour_data['open_time'], four_hour_signal, label='信号线', color='red')
+            ax2.bar(four_hour_data['open_time'], four_hour_hist, label='柱状图', alpha=0.3, color='purple')
+            ax2.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
+            ax2.set_ylabel('MACD值')
+            ax2.legend(loc='upper right')
             
-            # 3. 1小时价格图
-            plt.subplot(4, 2, 3)
-            plt.plot(hourly_data['open_time'], hourly_data['close'], label='收盘价')
-            plt.title(f'{symbol} - 1小时价格')
-            plt.grid(True)
-            plt.legend()
-            plt.xticks(rotation=45)
+            # 2. 合并1小时价格和MACD到同一子图
+            ax3 = plt.subplot(3, 1, 2)
+            ax3.plot(one_hour_data['open_time'], one_hour_data['close'], label='收盘价', color='blue')
+            ax3.set_title(f'{symbol} - 1小时价格和MACD')
+            ax3.set_ylabel('价格')
+            ax3.grid(True)
+            ax3.legend(loc='upper left')
+            ax3.tick_params(axis='x', rotation=45)
             
-            # 4. 1小时KDJ
-            hourly_k, hourly_d, hourly_j = self.calculate_kdj(hourly_data)
-            plt.subplot(4, 2, 4)
-            plt.plot(hourly_data['open_time'], hourly_k, label='K线')
-            plt.plot(hourly_data['open_time'], hourly_d, label='D线')
-            plt.plot(hourly_data['open_time'], hourly_j, label='J线')
-            plt.axhline(y=80, color='r', linestyle='--')
-            plt.axhline(y=20, color='g', linestyle='--')
-            plt.title(f'{symbol} - 1小时KDJ')
-            plt.grid(True)
-            plt.legend()
-            plt.xticks(rotation=45)
+            # 在同一子图添加MACD
+            ax4 = ax3.twinx()
+            one_hour_macd_line, one_hour_signal_line, one_hour_histogram = self.calculate_macd(one_hour_data)
+            ax4.plot(one_hour_data['open_time'], one_hour_macd_line, label='MACD', color='green')
+            ax4.plot(one_hour_data['open_time'], one_hour_signal_line, label='信号线', color='red')
+            ax4.bar(one_hour_data['open_time'], one_hour_histogram, label='柱状图', alpha=0.3, color='purple')
+            ax4.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
+            ax4.set_ylabel('MACD值')
+            ax4.legend(loc='upper right')
             
-            # 5. 最近20根1小时K线放大图
-            plt.subplot(4, 1, 3)
-            recent_hourly = hourly_data.tail(20)
-            plt.plot(recent_hourly['open_time'], recent_hourly['close'], label='收盘价')
+
+            
+            # 3. 最近20根1小时K线放大图
+            plt.subplot(3, 1, 3)
+            recent_one_hour = one_hour_data.tail(20)
+            plt.plot(recent_one_hour['open_time'], recent_one_hour['close'], label='收盘价')
             plt.title(f'{symbol} - 最近20根1小时K线')
-            plt.grid(True)
-            plt.legend()
-            plt.xticks(rotation=45)
-            
-            # 6. 最近20根1小时KDJ放大图
-            plt.subplot(4, 1, 4)
-            recent_k = hourly_k.tail(20)
-            recent_d = hourly_d.tail(20)
-            recent_j = hourly_j.tail(20)
-            plt.plot(recent_hourly['open_time'], recent_k, label='K线')
-            plt.plot(recent_hourly['open_time'], recent_d, label='D线')
-            plt.plot(recent_hourly['open_time'], recent_j, label='J线')
-            plt.axhline(y=50, color='k', linestyle='-', linewidth=0.8)
-            plt.title(f'{symbol} - 最近20根1小时KDJ')
             plt.grid(True)
             plt.legend()
             plt.xticks(rotation=45)
             
             # 添加分析摘要
             macd_bullish = four_hour_macd.iloc[-1] > 0
-            kdj_cross = self.detect_kdj_cross(hourly_k, hourly_d)
-            is_golden_cross = kdj_cross == 'golden_cross'
+            # 计算1小时MACD交叉
+            one_hour_macd, one_hour_signal, _ = self.calculate_macd(one_hour_data)
+            macd_cross = self.detect_macd_cross(one_hour_macd, one_hour_signal)
+            is_golden_cross = macd_cross == 'golden_cross'
             
             text_str = f"分析摘要:\n"
             text_str += f"4小时MACD值: {four_hour_macd.iloc[-1]:.4f} ({'多头' if macd_bullish else '空头'})\n"
-            text_str += f"1小时KDJ: K={hourly_k.iloc[-1]:.2f}, D={hourly_d.iloc[-1]:.2f} ({'金叉' if is_golden_cross else '死叉' if kdj_cross == 'death_cross' else '无交叉'})\n"
+            text_str += f"1小时MACD交叉: {'金叉' if is_golden_cross else '死叉' if macd_cross == 'death_cross' else '无交叉'}\n"
             text_str += f"信号确认: {'满足4小时多头+1小时金叉' if macd_bullish and is_golden_cross else '不满足信号条件'}"
             
             plt.figtext(0.5, 0.01, text_str, ha='center', fontsize=12, bbox=dict(facecolor='white', alpha=0.8))
@@ -1333,14 +1433,25 @@ class CryptoAnalyzer:
     def print_analysis_table(self, analysis_results):
         """打印分析结果表格"""
         print("\n" + "="*100)
-        print(f"{'币种':<10} {'周期':<10} {'大周期MACD方向':<15} {'本周期KDJ状态':<15} {'交易信号':<40}")
+        print(f"{'币种':<10} {'周期':<10} {'大周期MACD方向':<15} {'MACD交叉状态':<15} {'交易信号':<40}")
         print("="*100)
         
         for symbol, result in analysis_results.items():
-            if result['signal']:
-                print(f"{symbol:<10} {result['interval']:<10} {result['direction']:<15} {result['kdj_status']:<15} {result['signal']:<40}")
+            # 检查是否有kdj_status，如果有则转换为MACD交叉状态，否则使用macd_cross或默认值
+            if 'kdj_status' in result:
+                macd_status = "金叉" if "金叉" in result['kdj_status'] else "死叉" if "死叉" in result['kdj_status'] else "无交叉"
             else:
-                print(f"{symbol:<10} {result['interval']:<10} {result['direction']:<15} {result['kdj_status']:<15} {'暂无':<40}")
+                macd_status = result.get('macd_cross', "无交叉")
+                # 转换macd_cross的格式
+                if macd_status == 'golden_cross':
+                    macd_status = "金叉"
+                elif macd_status == 'death_cross':
+                    macd_status = "死叉"
+            
+            if result['signal']:
+                print(f"{symbol:<10} {result['interval']:<10} {result['direction']:<15} {macd_status:<15} {result['signal']:<40}")
+            else:
+                print(f"{symbol:<10} {result['interval']:<10} {result['direction']:<15} {macd_status:<15} {'暂无':<40}")
         print("="*100)
 
 def send_urgent_notification(symbol="BTCUSDT", message="紧急提醒"):
