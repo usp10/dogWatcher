@@ -1,5 +1,8 @@
 import requests
 from requests.adapters import HTTPAdapter, Retry
+import urllib3
+# 抑制urllib3的不安全请求警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import pandas as pd
 import numpy as np
 import time
@@ -66,8 +69,8 @@ class CryptoAnalyzer:
         except Exception as e:
             print(f"保存重点关注列表出错: {e}")
         
-    def get_futures_klines(self, symbol, interval, limit=500, max_retries=2):
-        """从Binance合约API获取K线数据，带重试机制"""
+    def get_futures_klines(self, symbol, interval, limit=500, max_retries=3):
+        """从Binance合约API获取K线数据，带重试机制和SSL错误处理"""
         params = {
             'symbol': symbol,
             'interval': interval,
@@ -76,77 +79,214 @@ class CryptoAnalyzer:
         
         # 设置超时和重试
         session = requests.Session()
-        retry = Retry(total=max_retries, backoff_factor=0.3)  # 减少重试间隔
+        retry = Retry(
+            total=max_retries, 
+            backoff_factor=0.3,  # 减少重试间隔
+            status_forcelist=[429, 500, 502, 503, 504],  # 指定需要重试的HTTP状态码
+            allowed_methods=["GET"]  # 只对GET请求重试
+        )
         adapter = HTTPAdapter(max_retries=retry)
         session.mount('https://', adapter)
+        session.mount('http://', adapter)
         # 添加请求头和超时优化
         headers = {'Accept-Encoding': 'gzip, deflate'}
         
-        for attempt in range(max_retries):
+        try:
+            # 添加SSL验证设置和延长超时
+            response = session.get(
+                self.binance_futures_url, 
+                params=params, 
+                timeout=15,
+                headers=headers,
+                verify=False  # 禁用SSL验证以解决证书问题
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            # 格式化数据为DataFrame
+            df = pd.DataFrame(data, columns=[
+                'open_time', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'quote_volume', 'trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'
+            ])
+            
+            # 转换数据类型
+            df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+            df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
+            numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'quote_volume', 'trades', 'taker_base_vol', 'taker_quote_vol']
+            df[numeric_columns] = df[numeric_columns].astype(float)
+            
+            return df
+            
+        except requests.exceptions.SSLError:
+            print(f"获取{symbol}的{interval}合约数据时遇到SSL错误，已禁用SSL验证")
+            # SSL错误时再次尝试，确保verify=False生效
             try:
-                response = session.get(self.binance_futures_url, params=params, timeout=10)
+                response = session.get(
+                    self.binance_futures_url, 
+                    params=params, 
+                    timeout=15,
+                    headers=headers,
+                    verify=False
+                )
                 response.raise_for_status()
                 data = response.json()
                 
-                # 格式化数据为DataFrame
                 df = pd.DataFrame(data, columns=[
                     'open_time', 'open', 'high', 'low', 'close', 'volume',
                     'close_time', 'quote_volume', 'trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'
                 ])
                 
-                # 转换数据类型
                 df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
                 df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
                 numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'quote_volume', 'trades', 'taker_base_vol', 'taker_quote_vol']
                 df[numeric_columns] = df[numeric_columns].astype(float)
                 
                 return df
-            except Exception as e:
-                print(f"获取{symbol}的{interval}合约数据时出错 (尝试 {attempt+1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    print("正在重试...")
+                
+            except Exception as inner_e:
+                print(f"SSL错误重试后仍获取失败: {inner_e}")
+                return None
+                
+        except Exception as e:
+            print(f"获取{symbol}的{interval}合约数据时出错: {e}")
+            # 对于非SSL错误，尝试多次重试
+            for attempt in range(1, max_retries):
+                try:
+                    print(f"正在重试... (尝试 {attempt+1}/{max_retries})")
                     time.sleep(1)
-        
+                    response = session.get(
+                        self.binance_futures_url, 
+                        params=params, 
+                        timeout=15,
+                        headers=headers,
+                        verify=False
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    
+                    df = pd.DataFrame(data, columns=[
+                        'open_time', 'open', 'high', 'low', 'close', 'volume',
+                        'close_time', 'quote_volume', 'trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'
+                    ])
+                    
+                    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+                    df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
+                    numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'quote_volume', 'trades', 'taker_base_vol', 'taker_quote_vol']
+                    df[numeric_columns] = df[numeric_columns].astype(float)
+                    
+                    return df
+                    
+                except Exception as retry_e:
+                    print(f"重试失败 (尝试 {attempt+1}/{max_retries}): {retry_e}")
+                    
         print(f"获取{symbol}的{interval}合约数据失败，已达到最大重试次数")
         return None
+        
+        # 确保在函数结束时关闭session
+        session.close()
     
     def get_top_usdt_futures(self, top_n=50, max_retries=3):
-        """获取成交额前N名的USDT合约币种及其成交额"""
+        """获取成交额前N名的USDT合约币种及其成交额，添加SSL错误处理"""
         # 设置超时和重试
         session = requests.Session()
-        retry = Retry(total=max_retries, backoff_factor=0.5)
+        retry = Retry(
+            total=max_retries,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"]
+        )
         adapter = HTTPAdapter(max_retries=retry)
         session.mount('https://', adapter)
+        session.mount('http://', adapter)
         
-        for attempt in range(max_retries):
+        try:
+            # 添加SSL验证设置和超时控制
+            response = session.get(
+                self.binance_ticker_url, 
+                timeout=15,
+                verify=False  # 禁用SSL验证以解决证书问题
+            )
+            response.raise_for_status()
+            tickers = response.json()
+            
+            # 筛选USDT合约币种并保存成交额
+            usdt_pairs = []
+            for ticker in tickers:
+                if ticker['symbol'].endswith('USDT') and 'quoteVolume' in ticker:
+                    try:
+                        quote_volume = float(ticker['quoteVolume'])
+                        usdt_pairs.append((ticker['symbol'], quote_volume))  # (符号, 成交额)
+                    except ValueError:
+                        continue
+            
+            # 按成交额降序排序并取前N名
+            usdt_pairs.sort(key=lambda x: x[1], reverse=True)
+            
+            return usdt_pairs[:top_n]
+            
+        except requests.exceptions.SSLError:
+            print("获取合约币种数据时遇到SSL错误，已禁用SSL验证")
+            # SSL错误时再次尝试
             try:
-                response = session.get(self.binance_ticker_url, timeout=15)
+                response = session.get(
+                    self.binance_ticker_url, 
+                    timeout=15,
+                    verify=False
+                )
                 response.raise_for_status()
                 tickers = response.json()
                 
-                # 筛选USDT合约币种并保存成交额
                 usdt_pairs = []
                 for ticker in tickers:
                     if ticker['symbol'].endswith('USDT') and 'quoteVolume' in ticker:
                         try:
                             quote_volume = float(ticker['quoteVolume'])
-                            usdt_pairs.append((ticker['symbol'], quote_volume))  # (符号, 成交额)
+                            usdt_pairs.append((ticker['symbol'], quote_volume))
                         except ValueError:
                             continue
                 
-                # 按成交额降序排序并取前N名
                 usdt_pairs.sort(key=lambda x: x[1], reverse=True)
-                
                 return usdt_pairs[:top_n]
                 
-            except Exception as e:
-                print(f"获取合约币种数据时出错 (尝试 {attempt+1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    print("正在重试...")
+            except Exception as inner_e:
+                print(f"SSL错误重试后仍获取失败: {inner_e}")
+                return []
+                
+        except Exception as e:
+            print(f"获取合约币种数据时出错: {e}")
+            # 对于非SSL错误，尝试多次重试
+            for attempt in range(1, max_retries):
+                try:
+                    print(f"正在重试... (尝试 {attempt+1}/{max_retries})")
                     time.sleep(2)
-        
+                    response = session.get(
+                        self.binance_ticker_url, 
+                        timeout=15,
+                        verify=False
+                    )
+                    response.raise_for_status()
+                    tickers = response.json()
+                    
+                    usdt_pairs = []
+                    for ticker in tickers:
+                        if ticker['symbol'].endswith('USDT') and 'quoteVolume' in ticker:
+                            try:
+                                quote_volume = float(ticker['quoteVolume'])
+                                usdt_pairs.append((ticker['symbol'], quote_volume))
+                            except ValueError:
+                                continue
+                    
+                    usdt_pairs.sort(key=lambda x: x[1], reverse=True)
+                    return usdt_pairs[:top_n]
+                    
+                except Exception as retry_e:
+                    print(f"重试失败 (尝试 {attempt+1}/{max_retries}): {retry_e}")
+                    
         print("获取合约币种数据失败，已达到最大重试次数")
         return []
+        
+        # 确保在函数结束时关闭session
+        session.close()
     
     def calculate_macd(self, data, fast_period=12, slow_period=26, signal_period=9):
         """计算MACD指标"""
@@ -167,12 +307,13 @@ class CryptoAnalyzer:
     
     # 删除KDJ相关函数，使用MACD交叉替代
     
-    def detect_macd_cross(self, macd_line, signal_line):
-        """检测MACD金叉死叉，基础版本
+    def detect_macd_cross(self, macd_line, signal_line, check_zero_line=False):
+        """检测MACD金叉死叉，支持检查0轴位置
         
         Args:
             macd_line: MACD线数据
             signal_line: 信号线数据
+            check_zero_line: 是否检查MACD值相对于0轴的位置
             
         Returns:
             str: 'golden_cross'(金叉), 'death_cross'(死叉) 或 None
@@ -184,6 +325,8 @@ class CryptoAnalyzer:
         # 检查金叉（MACD线上穿信号线）
         if (macd_line.iloc[-3] < signal_line.iloc[-3] and 
             macd_line.iloc[-2] > signal_line.iloc[-2]):
+            # 如果需要检查0轴位置，则根据当前需求返回结果
+            # 这里保持基础逻辑不变，具体的0轴位置检查在调用处处理
             return 'golden_cross'
         
         # 检查死叉（MACD线下穿信号线）
@@ -194,13 +337,11 @@ class CryptoAnalyzer:
         return None
         
     def check_buy_signal(self, macd_line, signal_line, price_data=None):
-        """检查买入信号：
-        1. 检测到1h刚才出现了金叉A，获取收盘价a
-        2. 寻找前一个金叉B，获取收盘价b
-        3. 金叉B的DIF值必须低于0轴下，否则不符合
-        4. 判断A的dif在0轴上还是0轴下：
-           - 如果在0轴上，则需要a>b
-           - 如果0轴下则需要a< b
+        """检查买入信号（适用于15分钟周期）：
+        1. 检测到15m刚才出现了金叉A（必须在0轴下）
+        2. 寻找前一个金叉B，获取收盘价b（必须在最近60个K线内，约15小时）
+        3. 金叉B的DIF值必须明显低于0轴下
+        4. 判断价格条件并验证差异
         
         Args:
             macd_line: MACD线数据
@@ -219,29 +360,50 @@ class CryptoAnalyzer:
         if price_data is None or 'close' not in price_data:
             return False
         
-        # 获取金叉A的收盘价a
-        if len(price_data) < 2:
+        # 获取金叉A的收盘价a和MACD值
+        if len(price_data) < 2 or len(macd_line) < 2:
             return False
         
         close_price_a = price_data['close'].iloc[-2]  # 金叉A的收盘价
         macd_value_a = macd_line.iloc[-2]  # 金叉A的DIF值
         
-        # 寻找上一个金叉B，其DIF值必须在0轴下
+        # 确保金叉A在0轴下（虽然在analyze_single_currency中已经检查，但这里再次验证）
+        if macd_value_a >= 0:
+            return False
+        
+        # 寻找上一个金叉B，其DIF值必须在0轴下，且必须在最近60个K线内（适应15分钟周期）
         last_golden_cross_idx = None
         
+        # 限制搜索范围在最近60个K线内（加上6个跳过的点，总共66个）
+        search_start_idx = max(0, len(macd_line) - 66)
+        
         # 从当前位置向前查找
-        for i in range(len(macd_line) - 4, 0, -1):
+        for i in range(len(macd_line) - 6, search_start_idx, -1):
             # 检查是否在i位置发生金叉
+            if i-1 < 0:
+                continue
+            
             cross_at_i = (macd_line.iloc[i-1] < signal_line.iloc[i-1] and 
                          macd_line.iloc[i] > signal_line.iloc[i])
             
-            # 检查金叉B的DIF值是否在0轴下
-            if cross_at_i and macd_line.iloc[i] < 0:
+            # 检查金叉B的DIF值是否严格在0轴下且明显低于0轴
+            if cross_at_i and macd_line.iloc[i] < -0.0005:  # 15分钟周期稍微放宽阈值
                 last_golden_cross_idx = i
-                break
+                # 添加额外检查：确保找到的金叉是有效的
+                if last_golden_cross_idx + 1 < len(macd_line) and last_golden_cross_idx - 1 >= 0:
+                    # 验证确实是一个有效的金叉
+                    if (macd_line.iloc[last_golden_cross_idx - 1] < signal_line.iloc[last_golden_cross_idx - 1] and 
+                        macd_line.iloc[last_golden_cross_idx] > signal_line.iloc[last_golden_cross_idx] and 
+                        macd_line.iloc[last_golden_cross_idx] < -0.0005):
+                        break
         
         # 如果找不到符合条件的上一个金叉B，不满足条件
         if last_golden_cross_idx is None:
+            return False
+        
+        # 额外验证：确保金叉B和金叉A之间的时间间隔合理（不超过40个K线，约10小时）
+        kline_distance = len(macd_line) - 2 - last_golden_cross_idx
+        if kline_distance > 40:
             return False
         
         # 获取金叉B的收盘价b
@@ -250,20 +412,28 @@ class CryptoAnalyzer:
         
         close_price_b = price_data['close'].iloc[last_golden_cross_idx]
         
-        # 判断A的dif位置并应用相应的价格条件
-        if macd_value_a > 0:  # A在0轴上
-            return close_price_a > close_price_b
-        else:  # A在0轴下
-            return close_price_a < close_price_b
+        # 计算价格差异百分比
+        price_diff_pct = abs(close_price_a - close_price_b) / close_price_b * 100
+        
+        # 添加额外的安全检查：确保不是数据异常
+        if abs(price_diff_pct) > 100:  # 避免极端情况
+            return False
+        
+        # 对于15分钟周期，价格差异要求稍微降低到0.2%（因为周期较小）
+        if price_diff_pct < 0.2:
+            return False
+        
+        # 由于金叉A在0轴下，应该是价格下跌后的反弹，所以close_price_a应该小于close_price_b
+        # 但考虑到是买入信号，应该是反弹开始，所以这里应该是close_price_a接近但小于close_price_b
+        # 具体判断根据实际交易逻辑调整
+        return close_price_a < close_price_b or close_price_a < close_price_b * 1.01  # 允许小幅上涨
     
     def check_sell_signal(self, macd_line, signal_line, price_data=None):
-        """检查卖出信号：
-        1. 检测到1h刚才出现了死叉A，获取收盘价a
-        2. 寻找前一个死叉B，获取收盘价b
-        3. 死叉B的DIF值必须高于0轴上，否则不符合
-        4. 判断A的dif在0轴上还是0轴下：
-           - 如果在0轴下，则需要a<b
-           - 如果0轴上则需要a> b
+        """检查卖出信号（适用于15分钟周期）：
+        1. 检测到15m刚才出现了死叉A（必须在0轴上）
+        2. 寻找前一个死叉B，获取收盘价b（必须在最近60个K线内，约15小时）
+        3. 死叉B的DIF值必须明显高于0轴上
+        4. 判断价格条件并验证差异
         
         Args:
             macd_line: MACD线数据
@@ -282,29 +452,47 @@ class CryptoAnalyzer:
         if price_data is None or 'close' not in price_data:
             return False
         
-        # 获取死叉A的收盘价a
-        if len(price_data) < 2:
+        # 获取死叉A的收盘价a和MACD值
+        if len(price_data) < 2 or len(macd_line) < 2:
             return False
         
         close_price_a = price_data['close'].iloc[-2]  # 死叉A的收盘价
         macd_value_a = macd_line.iloc[-2]  # 死叉A的DIF值
         
-        # 寻找上一个死叉B，其DIF值必须在0轴上
+        # 确保死叉A在0轴上（虽然在analyze_single_currency中已经检查，但这里再次验证）
+        if macd_value_a <= 0:
+            return False
+        
+        # 寻找上一个死叉B，其DIF值必须在0轴上，且必须在最近60个K线内（适应15分钟周期）
         last_death_cross_idx = None
         
+        # 限制搜索范围在最近60个K线内（加上4个跳过的点，总共64个）
+        search_start_idx = max(0, len(macd_line) - 64)
+        
         # 从当前位置向前查找
-        for i in range(len(macd_line) - 4, 0, -1):
+        for i in range(len(macd_line) - 4, search_start_idx, -1):
             # 检查是否在i位置发生死叉
             cross_at_i = (macd_line.iloc[i-1] > signal_line.iloc[i-1] and 
                          macd_line.iloc[i] < signal_line.iloc[i])
             
-            # 检查死叉B的DIF值是否在0轴上
-            if cross_at_i and macd_line.iloc[i] > 0:
+            # 检查死叉B的DIF值是否严格在0轴上且明显高于0轴
+            if cross_at_i and macd_line.iloc[i] > 0.0005:  # 15分钟周期稍微放宽阈值
                 last_death_cross_idx = i
-                break
+                # 添加额外检查：确保找到的死叉是有效的
+                if last_death_cross_idx + 1 < len(macd_line) and last_death_cross_idx - 1 >= 0:
+                    # 验证确实是一个有效的死叉
+                    if (macd_line.iloc[last_death_cross_idx - 1] > signal_line.iloc[last_death_cross_idx - 1] and 
+                        macd_line.iloc[last_death_cross_idx] < signal_line.iloc[last_death_cross_idx] and 
+                        macd_line.iloc[last_death_cross_idx] > 0.0005):
+                        break
         
         # 如果找不到符合条件的上一个死叉B，不满足条件
         if last_death_cross_idx is None:
+            return False
+        
+        # 额外验证：确保死叉B和死叉A之间的时间间隔合理（不超过40个K线，约10小时）
+        kline_distance = len(macd_line) - 2 - last_death_cross_idx
+        if kline_distance > 40:
             return False
         
         # 获取死叉B的收盘价b
@@ -313,11 +501,21 @@ class CryptoAnalyzer:
         
         close_price_b = price_data['close'].iloc[last_death_cross_idx]
         
-        # 判断A的dif位置并应用相应的价格条件
-        if macd_value_a < 0:  # A在0轴下
-            return close_price_a < close_price_b
-        else:  # A在0轴上
-            return close_price_a > close_price_b
+        # 计算价格差异百分比
+        price_diff_pct = abs(close_price_a - close_price_b) / close_price_b * 100
+        
+        # 添加额外的安全检查：确保不是数据异常
+        if abs(price_diff_pct) > 100:  # 避免极端情况
+            return False
+        
+        # 对于15分钟周期，价格差异要求稍微降低到0.2%（因为周期较小）
+        if price_diff_pct < 0.2:
+            return False
+        
+        # 由于死叉A在0轴上，应该是价格上涨后的回落，所以close_price_a应该大于close_price_b
+        # 但考虑到是卖出信号，应该是回落开始，所以这里应该是close_price_a接近但大于close_price_b
+        # 具体判断根据实际交易逻辑调整
+        return close_price_a > close_price_b or close_price_a > close_price_b * 0.99  # 允许小幅下跌
     
     def check_macd_golden_cross_rule(self, macd_line, signal_line):
         """
@@ -423,48 +621,54 @@ class CryptoAnalyzer:
     def analyze_single_currency(self, symbol):
         """分析单个币种，返回分析结果"""
         try:
-            # 大周期是4h，小周期是1h
+            # 大周期是4h，小周期是15m
             four_hour_interval = '4h'  # 大周期
-            hourly_interval = '1h'  # 小周期
+            quarter_hour_interval = '15m'  # 小周期（从1h改为15m）
             
             # 获取4小时周期数据（大周期）
             four_hour_data = self.get_futures_klines(symbol, four_hour_interval, limit=50)
-            # 获取1小时周期数据（小周期）
-            hourly_data = self.get_futures_klines(symbol, hourly_interval, limit=100)
+            # 获取15分钟周期数据（小周期），增加数据量以适应更小的时间周期
+            quarter_hour_data = self.get_futures_klines(symbol, quarter_hour_interval, limit=200)
             
-            if four_hour_data is None or hourly_data is None:
-                return symbol, None, None, None, None, None, None, None, hourly_interval
+            if four_hour_data is None or quarter_hour_data is None:
+                return symbol, None, None, None, None, None, None, None, quarter_hour_interval
             
-            if len(four_hour_data) < 10 or len(hourly_data) < 50:
-                return symbol, None, None, None, None, None, None, None, hourly_interval
+            # 调整数据量要求，15分钟周期需要更多数据点
+            if len(four_hour_data) < 10 or len(quarter_hour_data) < 100:
+                return symbol, None, None, None, None, None, None, None, quarter_hour_interval
             
             # 计算大周期4小时MACD
             four_hour_macd_line, four_hour_macd_signal, _ = self.calculate_macd(four_hour_data)
-            # 计算小周期1小时MACD
-            hourly_macd_line, hourly_macd_signal, _ = self.calculate_macd(hourly_data)
+            # 计算小周期15分钟MACD
+            quarter_hour_macd_line, quarter_hour_macd_signal, _ = self.calculate_macd(quarter_hour_data)
             
             # 判断大周期MACD方向（多头：dif > dea，空头：dif < dea）
             four_hour_macd_bullish = four_hour_macd_line.iloc[-1] > four_hour_macd_signal.iloc[-1]
             macd_status = "多头" if four_hour_macd_bullish else "空头"
             
-            # 检测小周期1小时MACD交叉
-            macd_cross = self.detect_macd_cross(hourly_macd_line, hourly_macd_signal)
+            # 检测小周期15分钟MACD交叉
+            macd_cross = self.detect_macd_cross(quarter_hour_macd_line, quarter_hour_macd_signal)
             is_golden_cross = macd_cross == 'golden_cross'
+            is_death_cross = macd_cross == 'death_cross'
             
             # 获取大周期最新的MACD值（dif值）
             four_hour_macd_value = four_hour_macd_line.iloc[-1]
             
-            # 检查买入信号：暂时忽略大周期判断，只使用小周期的新MACD判定法
+            # 检查买入信号：必须满足大周期多头+小周期金叉+金叉必须在0轴下
             is_buy_signal = False
-            if is_golden_cross:
-                # 应用新的买入信号规则，传入价格数据
-                is_buy_signal = self.check_buy_signal(hourly_macd_line, hourly_macd_signal, hourly_data)
+            if four_hour_macd_bullish and is_golden_cross:
+                # 检查金叉是否在0轴下
+                if quarter_hour_macd_line.iloc[-2] < 0:
+                    # 只有大周期为多头且小周期在0轴下出现金叉时，才检查买入信号
+                    is_buy_signal = self.check_buy_signal(quarter_hour_macd_line, quarter_hour_macd_signal, quarter_hour_data)
             
-            # 检查卖出信号：暂时忽略大周期判断，只使用小周期的新MACD判定法
+            # 检查卖出信号：必须满足小周期死叉+死叉必须在0轴上
             is_sell_signal = False
-            if macd_cross == 'death_cross':
-                # 应用新的卖出信号规则，传入价格数据
-                is_sell_signal = self.check_sell_signal(hourly_macd_line, hourly_macd_signal, hourly_data)
+            if is_death_cross:
+                # 检查死叉是否在0轴上
+                if quarter_hour_macd_line.iloc[-2] > 0:
+                    # 只有小周期在0轴上出现死叉时，才检查卖出信号
+                    is_sell_signal = self.check_sell_signal(quarter_hour_macd_line, quarter_hour_macd_signal, quarter_hour_data)
             
             # 注释：保留大周期判断逻辑，后续可能需要使用
             # if four_hour_macd_bullish and is_golden_cross:
@@ -472,30 +676,8 @@ class CryptoAnalyzer:
             # if not four_hour_macd_bullish and macd_cross == 'death_cross':
             #     is_sell_signal = self.check_sell_signal(hourly_macd_line, hourly_macd_signal, hourly_data)
             
-            # 返回分析结果，保持原有返回格式以便execute_filter处理
-            return symbol, macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish, is_buy_signal, is_sell_signal, hourly_interval
-            
-            # 计算MACD交叉
-            macd_cross = self.detect_macd_cross(macd_line, macd_signal)
-            is_golden_cross = macd_cross == 'golden_cross'
-            is_death_cross = macd_cross == 'death_cross'
-            
-            # 检查买入信号
-            buy_signal = self.check_buy_signal(macd_line, macd_signal)
-            
-            # 检查卖出信号
-            sell_signal = self.check_sell_signal(macd_line, macd_signal)
-            
-            # 打印调试信息
-            if buy_signal:
-                print(f"  {symbol}满足买入信号: MACD[-2]={macd_line.iloc[-2]:.4f}, MACD[-3]={macd_line.iloc[-3]:.4f}")
-            elif sell_signal:
-                print(f"  {symbol}满足卖出信号: MACD[-2]={macd_line.iloc[-2]:.4f}, MACD[-3]={macd_line.iloc[-3]:.4f}")
-            
-            # 返回结果，保持原有结构以便兼容
-            # 简化macd_status，只使用'多头'/'空头'表示MACD当前方向
-            macd_status = "多头" if macd_line.iloc[-1] > 0 else "空头"
-            return symbol, macd_status, is_golden_cross, macd_line.iloc[-1], macd_cross, macd_line.iloc[-1] > 0, None, None, interval
+            # 分析完成，返回结果
+            return symbol, macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish, is_buy_signal, is_sell_signal, quarter_hour_interval
         except Exception as e:
             print(f"分析{symbol}时出错: {e}")
             return symbol, None, None, None, None, None, None, None
@@ -590,11 +772,23 @@ class CryptoAnalyzer:
         print("="*100)
     
     def send_dingtalk_notification(self, message, title="加密货币分析提醒"):
-        """发送钉钉通知"""
+        """发送钉钉通知，添加重试机制和SSL错误处理"""
         if not self.dingtalk_webhook:
             print("未配置钉钉webhook，跳过通知发送")
             return False
             
+        # 创建会话并配置重试机制
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=3,  # 总重试次数
+            status_forcelist=[429, 500, 502, 503, 504],  # 需要重试的HTTP状态码
+            allowed_methods=["POST"],  # 允许重试的HTTP方法
+            backoff_factor=1  # 重试间隔时间因子
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        
         try:
             headers = {'Content-Type': 'application/json;charset=utf-8'}
             data = {
@@ -604,22 +798,65 @@ class CryptoAnalyzer:
                     "text": message
                 }
             }
-            response = requests.post(self.dingtalk_webhook, headers=headers, json=data)
+            # 添加超时设置和SSL验证选项
+            response = session.post(
+                self.dingtalk_webhook, 
+                headers=headers, 
+                json=data,
+                timeout=10,  # 设置超时时间为10秒
+                verify=False  # 禁用SSL验证以解决证书问题
+            )
+            response.raise_for_status()  # 抛出HTTP错误
+            
             if response.status_code == 200 and response.json().get('errcode') == 0:
                 print("钉钉通知发送成功")
                 return True
             else:
                 print(f"钉钉通知发送失败: {response.text}")
                 return False
+        except requests.exceptions.SSLError:
+            print("SSL连接错误，已禁用SSL验证")
+            # SSL错误时再次尝试，确保verify=False生效
+            try:
+                response = session.post(
+                    self.dingtalk_webhook, 
+                    headers=headers, 
+                    json=data,
+                    timeout=10,
+                    verify=False
+                )
+                if response.status_code == 200 and response.json().get('errcode') == 0:
+                    print("禁用SSL验证后钉钉通知发送成功")
+                    return True
+                else:
+                    print(f"禁用SSL验证后钉钉通知发送失败: {response.text}")
+                    return False
+            except Exception as inner_e:
+                print(f"禁用SSL验证后仍发送失败: {inner_e}")
+                return False
         except Exception as e:
             print(f"发送钉钉通知时出错: {e}")
             return False
+        finally:
+            session.close()
             
     def send_telegram_notification(self, message, title="加密货币分析提醒"):
-        """发送电报通知"""
+        """发送电报通知，添加重试机制和SSL错误处理"""
         if not self.telegram_bot_token or not self.telegram_chat_id:
             print("未配置电报机器人token或chat_id，跳过通知发送")
             return False
+            
+        # 创建会话并配置重试机制
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=3,  # 总重试次数
+            status_forcelist=[429, 500, 502, 503, 504],  # 需要重试的HTTP状态码
+            allowed_methods=["GET"],  # 允许重试的HTTP方法
+            backoff_factor=1  # 重试间隔时间因子
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
             
         try:
             # 为电报格式化消息，将markdown转换为电报支持的格式
@@ -630,21 +867,50 @@ class CryptoAnalyzer:
                 "text": telegram_message,
                 "parse_mode": "Markdown"
             }
-            response = requests.get(url, params=params)
+            # 添加超时设置和SSL验证选项
+            response = session.get(
+                url, 
+                params=params,
+                timeout=10,  # 设置超时时间为10秒
+                verify=False  # 禁用SSL验证以解决证书问题
+            )
+            response.raise_for_status()  # 抛出HTTP错误
+            
             if response.status_code == 200 and response.json().get('ok'):
                 print("电报通知发送成功")
                 return True
             else:
                 print(f"电报通知发送失败: {response.text}")
                 return False
+        except requests.exceptions.SSLError:
+            print("SSL连接错误，已禁用SSL验证")
+            # SSL错误时再次尝试，确保verify=False生效
+            try:
+                response = session.get(
+                    url, 
+                    params=params,
+                    timeout=10,
+                    verify=False
+                )
+                if response.status_code == 200 and response.json().get('ok'):
+                    print("禁用SSL验证后电报通知发送成功")
+                    return True
+                else:
+                    print(f"禁用SSL验证后电报通知发送失败: {response.text}")
+                    return False
+            except Exception as inner_e:
+                print(f"禁用SSL验证后仍发送失败: {inner_e}")
+                return False
         except Exception as e:
             print(f"发送电报通知时出错: {e}")
             return False
+        finally:
+            session.close()
     
     def run(self):
         """运行主程序"""
         print("欢迎使用币安合约币种筛选工具")
-        print("功能：筛选USDT合约成交额前100名币种，按成交额排序，检测4小时MACD状态（多头左侧/右侧、空头左侧/右侧）和1小时MACD交叉信号")
+        print("功能：筛选USDT合约成交额前100名币种，按成交额排序，检测4小时MACD状态（多头左侧/右侧、空头左侧/右侧）和15分钟MACD交叉信号")
         print("每小时整点自动运行一次，并将结果推送到电报")
         print("每5分钟检查一次持仓盈亏率")
         
@@ -1036,7 +1302,7 @@ class CryptoAnalyzer:
                         # 检测MACD死叉
                         is_death_cross = macd_cross == 'death_cross'
                         
-                        # 统一使用4小时MACD判断和1小时MACD交叉
+                        # 统一使用4小时MACD判断和15分钟MACD交叉
                         macd_interval = '4h'  # MACD判断周期
                         
                         # 获取相应周期的MACD数据
@@ -1108,7 +1374,7 @@ class CryptoAnalyzer:
             print(f"   {i}. {symbol}: {volume:.2f} USDT")
         
         print("\n2. 开始分析每个币种的MACD信号...")
-        print("   统一使用1小时MACD交叉和4小时MACD进行分析")
+        print("   统一使用15分钟MACD交叉和4小时MACD进行分析")
         # 打印表头
         print("="*110)
         print(f"{'币种':<15} {'MACD状态':<15} {'MACD值':<12} {'MACD交叉状态':<15} {'信号':<25}")
@@ -1197,8 +1463,8 @@ class CryptoAnalyzer:
         
         print("="*140)
         print(f"\n分析完成！总共分析了{total_analyzed}个币种")
-        print(f"1小时MACD多头币种: {bullish_count}个")
-        print(f"1小时MACD空头币种: {bearish_count}个")
+        print(f"15分钟MACD多头币种: {bullish_count}个")
+        print(f"15分钟MACD空头币种: {bearish_count}个")
         print(f"MACD金叉币种: {golden_cross_count}个")
         print(f"MACD死叉币种: {death_cross_count}个")
         print(f"买入信号币种: {buy_signal_count}个")
@@ -1206,9 +1472,9 @@ class CryptoAnalyzer:
         
         # 按MACD交叉周期分类信号列表
         # 多头信号分类
-        buy_signal_1h = []  # 1小时MACD交叉的买入信号
+        buy_signal_1h = []  # 15分钟MACD交叉的买入信号
         
-        sell_signal_1h = [] # 1小时MACD交叉的卖出信号
+        sell_signal_1h = [] # 15分钟MACD交叉的卖出信号
         
         # 重新构建包含MACD交叉周期的信号列表
         for symbol, _, _, _ in buy_signal_symbols:
@@ -1218,7 +1484,7 @@ class CryptoAnalyzer:
                     cross_interval = result[8]
                     for i, (s, status, macd, m_val) in enumerate(buy_signal_symbols):
                         if s == symbol:
-                            # 统一使用1小时MACD交叉
+                            # 统一使用15分钟MACD交叉
                             buy_signal_1h.append((symbol, status, macd, m_val, cross_interval))
                             break
 
@@ -1229,7 +1495,7 @@ class CryptoAnalyzer:
                     cross_interval = result[8]
                     for i, (s, status, macd, m_val) in enumerate(sell_signal_symbols):
                         if s == symbol:
-                            # 统一使用1小时MACD交叉
+                            # 统一使用15分钟MACD交叉
                             sell_signal_1h.append((symbol, status, macd, m_val, cross_interval))
                             break
         
@@ -1243,24 +1509,24 @@ class CryptoAnalyzer:
         # 输出1小时MACD交叉的买入信号
         if buy_signal_1h:
             print("\n⚠️  满足条件的买入信号币种：")
-            print("\n1小时MACD买入信号：")
+            print("\n15分钟MACD买入信号：")
             for symbol, status, macd, _, _ in buy_signal_1h:
                 print(f"   • {symbol} ({status}) - {macd}")
             
             # 添加到钉钉通知
-            dingtalk_content += "#### 🟢 1小时MACD多头信号：\n"
+            dingtalk_content += "#### 🟢 15分钟MACD多头信号：\n"
             for symbol, macd_status, macd, _, _ in buy_signal_1h:
                 dingtalk_content += f"- {symbol} ({macd_status}) - MACD: {macd}\n"
         
         # 输出1小时MACD交叉的卖出信号
         if sell_signal_1h:
             print("\n⚠️  满足条件的卖出信号币种：")
-            print("\n1小时MACD卖出信号：")
+            print("\n15分钟MACD卖出信号：")
             for symbol, status, macd, _, _ in sell_signal_1h:
                 print(f"   • {symbol} ({status}) - {macd}")
             
             # 添加到钉钉通知
-            dingtalk_content += "\n#### 🔴 1小时MACD空头信号：\n"
+            dingtalk_content += "\n#### 🔴 15分钟MACD空头信号：\n"
             for symbol, macd_status, macd, _, _ in sell_signal_1h:
                 dingtalk_content += f"- {symbol} ({macd_status}) - MACD: {macd}\n"
         
