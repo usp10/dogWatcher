@@ -318,30 +318,43 @@ class CryptoAnalyzer:
         Returns:
             str: 'golden_cross'(金叉), 'death_cross'(死叉) 或 None
         """
-        # 检查是否有足够的数据
-        if len(macd_line) < 3:  # 需要至少3个数据点来确认交叉发生在上一个完整周期
+        # 添加详细日志
+        print(f"检测MACD交叉 - 数据点数量: {len(macd_line)}")
+        
+        # 降低数据点要求，便于检测交叉
+        if len(macd_line) < 2:
+            print("MACD交叉检测失败：数据点不足")
             return None
         
-        # 检查金叉（MACD线上穿信号线）
-        if (macd_line.iloc[-3] < signal_line.iloc[-3] and 
-            macd_line.iloc[-2] > signal_line.iloc[-2]):
-            # 如果需要检查0轴位置，则根据当前需求返回结果
-            # 这里保持基础逻辑不变，具体的0轴位置检查在调用处处理
+        # 使用最近两个数据点检测交叉，更加宽松
+        prev_macd, curr_macd = macd_line.iloc[-2], macd_line.iloc[-1]
+        prev_signal, curr_signal = signal_line.iloc[-2], signal_line.iloc[-1]
+        
+        # 计算差异百分比
+        prev_diff_pct = abs(prev_macd - prev_signal) / max(abs(prev_signal), 0.0001) * 100
+        curr_diff_pct = abs(curr_macd - curr_signal) / max(abs(curr_signal), 0.0001) * 100
+        
+        print(f"MACD交叉检测 - 前值: {prev_macd:.6f}, 前信号: {prev_signal:.6f}, 差异: {prev_diff_pct:.4f}%")
+        print(f"MACD交叉检测 - 当前值: {curr_macd:.6f}, 当前信号: {curr_signal:.6f}, 差异: {curr_diff_pct:.4f}%")
+        
+        # 检测金叉（MACD线上穿信号线）
+        if prev_macd < prev_signal and curr_macd > curr_signal:
+            print(f"检测到金叉信号")
             return 'golden_cross'
         
-        # 检查死叉（MACD线下穿信号线）
-        elif (macd_line.iloc[-3] > signal_line.iloc[-3] and 
-              macd_line.iloc[-2] < signal_line.iloc[-2]):
+        # 检测死叉（MACD线下穿信号线）
+        elif prev_macd > prev_signal and curr_macd < curr_signal:
+            print(f"检测到死叉信号")
             return 'death_cross'
+        
+        # 添加近交叉检测，当MACD和信号线非常接近时也提示
+        elif abs(curr_macd - curr_signal) / max(abs(curr_signal), 0.0001) * 100 < 0.5:
+            print(f"MACD和信号线非常接近，可能即将交叉")
         
         return None
         
     def check_buy_signal(self, macd_line, signal_line, price_data=None):
-        """检查买入信号（适用于15分钟周期）：
-        1. 检测到15m刚才出现了金叉A（必须在0轴下）
-        2. 寻找前一个金叉B，获取收盘价b（必须在最近60个K线内，约15小时）
-        3. 金叉B的DIF值必须明显低于0轴下
-        4. 判断价格条件并验证差异
+        """检查买入信号（简化版本）
         
         Args:
             macd_line: MACD线数据
@@ -351,89 +364,40 @@ class CryptoAnalyzer:
         Returns:
             bool: 是否满足买入信号条件
         """
-        # 检查是否刚发生金叉
-        current_cross = self.detect_macd_cross(macd_line, signal_line)
-        if current_cross != 'golden_cross':
-            return False
-        
-        # 检查是否提供了价格数据
-        if price_data is None or 'close' not in price_data:
-            return False
-        
-        # 获取金叉A的收盘价a和MACD值
-        if len(price_data) < 2 or len(macd_line) < 2:
-            return False
-        
-        close_price_a = price_data['close'].iloc[-2]  # 金叉A的收盘价
-        macd_value_a = macd_line.iloc[-2]  # 金叉A的DIF值
-        
-        # 确保金叉A在0轴下（虽然在analyze_single_currency中已经检查，但这里再次验证）
-        if macd_value_a >= 0:
-            return False
-        
-        # 寻找上一个金叉B，其DIF值必须在0轴下，且必须在最近60个K线内（适应15分钟周期）
-        last_golden_cross_idx = None
-        
-        # 限制搜索范围在最近60个K线内（加上6个跳过的点，总共66个）
-        search_start_idx = max(0, len(macd_line) - 66)
-        
-        # 从当前位置向前查找
-        for i in range(len(macd_line) - 6, search_start_idx, -1):
-            # 检查是否在i位置发生金叉
-            if i-1 < 0:
-                continue
+        try:
+            # 检测MACD交叉
+            macd_cross = self.detect_macd_cross(macd_line, signal_line)
             
-            cross_at_i = (macd_line.iloc[i-1] < signal_line.iloc[i-1] and 
-                         macd_line.iloc[i] > signal_line.iloc[i])
+            # 检查是否为金叉
+            is_golden_cross = macd_cross == 'golden_cross'
             
-            # 检查金叉B的DIF值是否严格在0轴下且明显低于0轴
-            if cross_at_i and macd_line.iloc[i] < -0.0005:  # 15分钟周期稍微放宽阈值
-                last_golden_cross_idx = i
-                # 添加额外检查：确保找到的金叉是有效的
-                if last_golden_cross_idx + 1 < len(macd_line) and last_golden_cross_idx - 1 >= 0:
-                    # 验证确实是一个有效的金叉
-                    if (macd_line.iloc[last_golden_cross_idx - 1] < signal_line.iloc[last_golden_cross_idx - 1] and 
-                        macd_line.iloc[last_golden_cross_idx] > signal_line.iloc[last_golden_cross_idx] and 
-                        macd_line.iloc[last_golden_cross_idx] < -0.0005):
-                        break
-        
-        # 如果找不到符合条件的上一个金叉B，不满足条件
-        if last_golden_cross_idx is None:
+            # 添加详细日志
+            print(f"买入信号检查 - 金叉状态: {is_golden_cross}")
+            
+            # 简化逻辑：只要检测到金叉就返回True
+            if is_golden_cross:
+                print(f"满足简化后的买入信号条件")
+                return True
+            
+            # 额外检查：即使没有严格金叉，如果MACD线正在上穿信号线且两者非常接近，也考虑为潜在买入信号
+            if not is_golden_cross and len(macd_line) > 2:
+                # 检查最近几个数据点MACD线是否在上升且接近信号线
+                recent_macd_trend = (macd_line.iloc[-1] > macd_line.iloc[-2] > macd_line.iloc[-3])
+                close_to_signal = abs(macd_line.iloc[-1] - signal_line.iloc[-1]) / max(abs(signal_line.iloc[-1]), 0.0001) * 100 < 0.3
+                
+                if recent_macd_trend and close_to_signal:
+                    print(f"检测到潜在买入信号：MACD线上升趋势且接近信号线")
+                    return True
+            
             return False
-        
-        # 额外验证：确保金叉B和金叉A之间的时间间隔合理（不超过40个K线，约10小时）
-        kline_distance = len(macd_line) - 2 - last_golden_cross_idx
-        if kline_distance > 40:
+        except Exception as e:
+            print(f"买入信号检查错误: {e}")
+            import traceback
+            traceback.print_exc()
             return False
-        
-        # 获取金叉B的收盘价b
-        if last_golden_cross_idx >= len(price_data):
-            return False
-        
-        close_price_b = price_data['close'].iloc[last_golden_cross_idx]
-        
-        # 计算价格差异百分比
-        price_diff_pct = abs(close_price_a - close_price_b) / close_price_b * 100
-        
-        # 添加额外的安全检查：确保不是数据异常
-        if abs(price_diff_pct) > 100:  # 避免极端情况
-            return False
-        
-        # 对于15分钟周期，价格差异要求稍微降低到0.2%（因为周期较小）
-        if price_diff_pct < 0.2:
-            return False
-        
-        # 由于金叉A在0轴下，应该是价格下跌后的反弹，所以close_price_a应该小于close_price_b
-        # 但考虑到是买入信号，应该是反弹开始，所以这里应该是close_price_a接近但小于close_price_b
-        # 具体判断根据实际交易逻辑调整
-        return close_price_a < close_price_b or close_price_a < close_price_b * 1.01  # 允许小幅上涨
     
     def check_sell_signal(self, macd_line, signal_line, price_data=None):
-        """检查卖出信号（适用于15分钟周期）：
-        1. 检测到15m刚才出现了死叉A（必须在0轴上）
-        2. 寻找前一个死叉B，获取收盘价b（必须在最近60个K线内，约15小时）
-        3. 死叉B的DIF值必须明显高于0轴上
-        4. 判断价格条件并验证差异
+        """检查卖出信号（简化版本）
         
         Args:
             macd_line: MACD线数据
@@ -443,79 +407,37 @@ class CryptoAnalyzer:
         Returns:
             bool: 是否满足卖出信号条件
         """
-        # 检查是否刚发生死叉
-        current_cross = self.detect_macd_cross(macd_line, signal_line)
-        if current_cross != 'death_cross':
-            return False
-        
-        # 检查是否提供了价格数据
-        if price_data is None or 'close' not in price_data:
-            return False
-        
-        # 获取死叉A的收盘价a和MACD值
-        if len(price_data) < 2 or len(macd_line) < 2:
-            return False
-        
-        close_price_a = price_data['close'].iloc[-2]  # 死叉A的收盘价
-        macd_value_a = macd_line.iloc[-2]  # 死叉A的DIF值
-        
-        # 确保死叉A在0轴上（虽然在analyze_single_currency中已经检查，但这里再次验证）
-        if macd_value_a <= 0:
-            return False
-        
-        # 寻找上一个死叉B，其DIF值必须在0轴上，且必须在最近60个K线内（适应15分钟周期）
-        last_death_cross_idx = None
-        
-        # 限制搜索范围在最近60个K线内（加上4个跳过的点，总共64个）
-        search_start_idx = max(0, len(macd_line) - 64)
-        
-        # 从当前位置向前查找
-        for i in range(len(macd_line) - 4, search_start_idx, -1):
-            # 检查是否在i位置发生死叉
-            cross_at_i = (macd_line.iloc[i-1] > signal_line.iloc[i-1] and 
-                         macd_line.iloc[i] < signal_line.iloc[i])
+        try:
+            # 检测MACD交叉
+            macd_cross = self.detect_macd_cross(macd_line, signal_line)
             
-            # 检查死叉B的DIF值是否严格在0轴上且明显高于0轴
-            if cross_at_i and macd_line.iloc[i] > 0.0005:  # 15分钟周期稍微放宽阈值
-                last_death_cross_idx = i
-                # 添加额外检查：确保找到的死叉是有效的
-                if last_death_cross_idx + 1 < len(macd_line) and last_death_cross_idx - 1 >= 0:
-                    # 验证确实是一个有效的死叉
-                    if (macd_line.iloc[last_death_cross_idx - 1] > signal_line.iloc[last_death_cross_idx - 1] and 
-                        macd_line.iloc[last_death_cross_idx] < signal_line.iloc[last_death_cross_idx] and 
-                        macd_line.iloc[last_death_cross_idx] > 0.0005):
-                        break
-        
-        # 如果找不到符合条件的上一个死叉B，不满足条件
-        if last_death_cross_idx is None:
+            # 检查是否为死叉
+            is_death_cross = macd_cross == 'death_cross'
+            
+            # 添加详细日志
+            print(f"卖出信号检查 - 死叉状态: {is_death_cross}")
+            
+            # 简化逻辑：只要检测到死叉就返回True
+            if is_death_cross:
+                print(f"满足简化后的卖出信号条件")
+                return True
+            
+            # 额外检查：即使没有严格死叉，如果MACD线正在下穿信号线且两者非常接近，也考虑为潜在卖出信号
+            if not is_death_cross and len(macd_line) > 2:
+                # 检查最近几个数据点MACD线是否在下降且接近信号线
+                recent_macd_trend = (macd_line.iloc[-1] < macd_line.iloc[-2] < macd_line.iloc[-3])
+                close_to_signal = abs(macd_line.iloc[-1] - signal_line.iloc[-1]) / max(abs(signal_line.iloc[-1]), 0.0001) * 100 < 0.3
+                
+                if recent_macd_trend and close_to_signal:
+                    print(f"检测到潜在卖出信号：MACD线下降趋势且接近信号线")
+                    return True
+            
             return False
-        
-        # 额外验证：确保死叉B和死叉A之间的时间间隔合理（不超过40个K线，约10小时）
-        kline_distance = len(macd_line) - 2 - last_death_cross_idx
-        if kline_distance > 40:
+        except Exception as e:
+            print(f"卖出信号检查错误: {e}")
+            import traceback
+            traceback.print_exc()
             return False
-        
-        # 获取死叉B的收盘价b
-        if last_death_cross_idx >= len(price_data):
-            return False
-        
-        close_price_b = price_data['close'].iloc[last_death_cross_idx]
-        
-        # 计算价格差异百分比
-        price_diff_pct = abs(close_price_a - close_price_b) / close_price_b * 100
-        
-        # 添加额外的安全检查：确保不是数据异常
-        if abs(price_diff_pct) > 100:  # 避免极端情况
-            return False
-        
-        # 对于15分钟周期，价格差异要求稍微降低到0.2%（因为周期较小）
-        if price_diff_pct < 0.2:
-            return False
-        
-        # 由于死叉A在0轴上，应该是价格上涨后的回落，所以close_price_a应该大于close_price_b
-        # 但考虑到是卖出信号，应该是回落开始，所以这里应该是close_price_a接近但大于close_price_b
-        # 具体判断根据实际交易逻辑调整
-        return close_price_a > close_price_b or close_price_a > close_price_b * 0.99  # 允许小幅下跌
     
     def check_macd_golden_cross_rule(self, macd_line, signal_line):
         """
@@ -621,66 +543,89 @@ class CryptoAnalyzer:
     def analyze_single_currency(self, symbol):
         """分析单个币种，返回分析结果"""
         try:
+            print(f"开始分析币种: {symbol}")
+            
             # 大周期是4h，小周期是15m
             four_hour_interval = '4h'  # 大周期
-            quarter_hour_interval = '15m'  # 小周期（从1h改为15m）
+            quarter_hour_interval = '15m'  # 小周期
             
             # 获取4小时周期数据（大周期）
+            print(f"正在获取{symbol}的4小时K线数据...")
             four_hour_data = self.get_futures_klines(symbol, four_hour_interval, limit=50)
-            # 获取15分钟周期数据（小周期），增加数据量以适应更小的时间周期
+            # 获取15分钟周期数据（小周期）
+            print(f"正在获取{symbol}的15分钟K线数据...")
             quarter_hour_data = self.get_futures_klines(symbol, quarter_hour_interval, limit=200)
             
             if four_hour_data is None or quarter_hour_data is None:
-                return symbol, None, None, None, None, None, None, None, quarter_hour_interval
+                print(f"无法获取{symbol}的完整数据，跳过")
+                return symbol, None, False, None, None, None, False, False, quarter_hour_interval
             
-            # 调整数据量要求，15分钟周期需要更多数据点
-            if len(four_hour_data) < 10 or len(quarter_hour_data) < 100:
-                return symbol, None, None, None, None, None, None, None, quarter_hour_interval
+            # 降低数据量要求
+            if len(four_hour_data) < 20 or len(quarter_hour_data) < 50:
+                print(f"{symbol}数据量不足，跳过")
+                return symbol, None, False, None, None, None, False, False, quarter_hour_interval
             
             # 计算大周期4小时MACD
             four_hour_macd_line, four_hour_macd_signal, _ = self.calculate_macd(four_hour_data)
             # 计算小周期15分钟MACD
             quarter_hour_macd_line, quarter_hour_macd_signal, _ = self.calculate_macd(quarter_hour_data)
             
-            # 判断大周期MACD方向（多头：dif > dea，空头：dif < dea）
+            # 判断大周期MACD方向
             four_hour_macd_bullish = four_hour_macd_line.iloc[-1] > four_hour_macd_signal.iloc[-1]
             macd_status = "多头" if four_hour_macd_bullish else "空头"
+            
+            # 获取大周期最新的MACD值
+            four_hour_macd_value = four_hour_macd_line.iloc[-1]
+            
+            # 添加详细日志
+            print(f"{symbol} 4小时MACD值: {four_hour_macd_value:.6f}, 状态: {macd_status}")
+            print(f"{symbol} 4小时MACD线: {four_hour_macd_line.iloc[-1]:.6f}, 信号线: {four_hour_macd_signal.iloc[-1]:.6f}")
             
             # 检测小周期15分钟MACD交叉
             macd_cross = self.detect_macd_cross(quarter_hour_macd_line, quarter_hour_macd_signal)
             is_golden_cross = macd_cross == 'golden_cross'
             is_death_cross = macd_cross == 'death_cross'
             
-            # 获取大周期最新的MACD值（dif值）
-            four_hour_macd_value = four_hour_macd_line.iloc[-1]
-            
-            # 检查买入信号：必须满足大周期多头+小周期金叉+金叉必须在0轴下
+            # 简化信号检查逻辑
             is_buy_signal = False
-            if four_hour_macd_bullish and is_golden_cross:
-                # 检查金叉是否在0轴下
-                if quarter_hour_macd_line.iloc[-2] < 0:
-                    # 只有大周期为多头且小周期在0轴下出现金叉时，才检查买入信号
-                    is_buy_signal = self.check_buy_signal(quarter_hour_macd_line, quarter_hour_macd_signal, quarter_hour_data)
-            
-            # 检查卖出信号：必须满足小周期死叉+死叉必须在0轴上
             is_sell_signal = False
-            if is_death_cross:
-                # 检查死叉是否在0轴上
-                if quarter_hour_macd_line.iloc[-2] > 0:
-                    # 只有小周期在0轴上出现死叉时，才检查卖出信号
-                    is_sell_signal = self.check_sell_signal(quarter_hour_macd_line, quarter_hour_macd_signal, quarter_hour_data)
             
-            # 注释：保留大周期判断逻辑，后续可能需要使用
-            # if four_hour_macd_bullish and is_golden_cross:
-            #     is_buy_signal = self.check_buy_signal(hourly_macd_line, hourly_macd_signal, hourly_data)
-            # if not four_hour_macd_bullish and macd_cross == 'death_cross':
-            #     is_sell_signal = self.check_sell_signal(hourly_macd_line, hourly_macd_signal, hourly_data)
+            # 买入信号：大周期多头 + 小周期金叉（放宽0轴要求）
+            if four_hour_macd_bullish:
+                if is_golden_cross:
+                    is_buy_signal = self.check_buy_signal(quarter_hour_macd_line, quarter_hour_macd_signal, quarter_hour_data)
+                else:
+                    # 额外检查：如果大周期很强，但小周期还没形成金叉，可以考虑作为潜在买入信号
+                    recent_macd_trend = (quarter_hour_macd_line.iloc[-1] > quarter_hour_macd_line.iloc[-2] > quarter_hour_macd_line.iloc[-3])
+                    close_to_signal = abs(quarter_hour_macd_line.iloc[-1] - quarter_hour_macd_signal.iloc[-1]) / max(abs(quarter_hour_macd_signal.iloc[-1]), 0.0001) * 100 < 0.5
+                    
+                    if recent_macd_trend and close_to_signal:
+                        print(f"{symbol} 检测到潜在买入信号：大周期多头，小周期MACD接近交叉")
+                        is_buy_signal = True
+            
+            # 卖出信号：大周期空头 + 小周期死叉（放宽0轴要求）
+            if not four_hour_macd_bullish:
+                if is_death_cross:
+                    is_sell_signal = self.check_sell_signal(quarter_hour_macd_line, quarter_hour_macd_signal, quarter_hour_data)
+                else:
+                    # 额外检查：如果大周期很弱，但小周期还没形成死叉，可以考虑作为潜在卖出信号
+                    recent_macd_trend = (quarter_hour_macd_line.iloc[-1] < quarter_hour_macd_line.iloc[-2] < quarter_hour_macd_line.iloc[-3])
+                    close_to_signal = abs(quarter_hour_macd_line.iloc[-1] - quarter_hour_macd_signal.iloc[-1]) / max(abs(quarter_hour_macd_signal.iloc[-1]), 0.0001) * 100 < 0.5
+                    
+                    if recent_macd_trend and close_to_signal:
+                        print(f"{symbol} 检测到潜在卖出信号：大周期空头，小周期MACD接近交叉")
+                        is_sell_signal = True
+            
+            # 添加信号检查结果日志
+            print(f"{symbol} 信号检查结果 - 买入信号: {is_buy_signal}, 卖出信号: {is_sell_signal}")
             
             # 分析完成，返回结果
             return symbol, macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish, is_buy_signal, is_sell_signal, quarter_hour_interval
         except Exception as e:
             print(f"分析{symbol}时出错: {e}")
-            return symbol, None, None, None, None, None, None, None
+            import traceback
+            traceback.print_exc()
+            return symbol, None, False, None, None, None, False, False, None
     
     def check_4h_bullish_1h_goldencross(self, symbol):
         """检查特定信号：大周期MACD状态和小周期MACD交叉"""
@@ -1795,6 +1740,48 @@ def send_urgent_notification(symbol="BTCUSDT", message="紧急提醒"):
         # 确保恢复原始方法
         analyzer.mad_push_to_dingtalk = original_mad_push
 
+def test_signal_generation():
+    """测试信号生成逻辑的函数"""
+    print("\n===== 开始测试信号生成逻辑 =====")
+    
+    # 配置参数
+    DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=02fcc926215099c4d0315e453e86aa6d9af934ad538de89b13f67bc3d131ee07"
+    TELEGRAM_BOT_TOKEN = "7708753284:AAEYV4WRHfJQR4tCb5uQ8ye-T29IEf6X9qE"
+    TELEGRAM_CHAT_ID = "-4611171283"
+    
+    analyzer = CryptoAnalyzer(
+        dingtalk_webhook=DINGTALK_WEBHOOK,
+        telegram_bot_token=TELEGRAM_BOT_TOKEN,
+        telegram_chat_id=TELEGRAM_CHAT_ID
+    )
+    
+    # 只测试几个主要币种，避免输出过多
+    test_symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
+    
+    for symbol in test_symbols:
+        print(f"\n正在测试 {symbol} 的信号生成...")
+        result = analyzer.analyze_single_currency(symbol)
+        if result:
+            # 根据实际返回值数量解包
+            if len(result) >= 8:
+                symbol, macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish, is_buy_signal, is_sell_signal = result[:8]
+                
+                print(f"\n{symbol} 分析结果:")
+                print(f"MACD状态: {macd_status}")
+                print(f"4小时MACD值: {four_hour_macd_value}")
+                print(f"MACD交叉状态: {macd_cross}")
+                print(f"买入信号: {is_buy_signal}")
+                print(f"卖出信号: {is_sell_signal}")
+                
+                if is_buy_signal:
+                    print(f"✅ {symbol} 生成了买入信号！")
+                elif is_sell_signal:
+                    print(f"⚠️ {symbol} 生成了卖出信号！")
+                else:
+                    print(f"❌ {symbol} 未生成交易信号")
+    
+    print("\n===== 信号生成测试完成 =====\n")
+
 if __name__ == "__main__":
     import sys
     
@@ -1824,6 +1811,9 @@ if __name__ == "__main__":
             message = " ".join(sys.argv[3:]) if len(sys.argv) > 3 else "紧急提醒"
             send_urgent_notification(symbol, message)
             print("\n=== 推送完成 ===")
+        elif sys.argv[1] == "--test-signals":
+            # 测试信号生成逻辑
+            test_signal_generation()
     else:
         # 正常运行
         analyzer = CryptoAnalyzer(
