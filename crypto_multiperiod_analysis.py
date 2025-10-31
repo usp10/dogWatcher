@@ -79,12 +79,24 @@ class CryptoAnalyzer:
         
         # 设置超时和重试
         session = requests.Session()
-        retry = Retry(
-            total=max_retries, 
-            backoff_factor=0.3,  # 减少重试间隔
-            status_forcelist=[429, 500, 502, 503, 504],  # 指定需要重试的HTTP状态码
-            allowed_methods=["GET"]  # 只对GET请求重试
-        )
+        
+        # 处理Retry参数兼容性问题
+        retry_kwargs = {
+            'total': max_retries,
+            'backoff_factor': 0.3,  # 减少重试间隔
+            'status_forcelist': [429, 500, 502, 503, 504]  # 指定需要重试的HTTP状态码
+        }
+        
+        # 尝试使用allowed_methods（新版本），如果失败则回退
+        try:
+            # 测试Retry是否接受allowed_methods参数
+            test_retry = Retry(**retry_kwargs, allowed_methods=["GET"])
+            retry_kwargs['allowed_methods'] = ["GET"]
+        except TypeError:
+            # 旧版本使用method_whitelist
+            retry_kwargs['method_whitelist'] = ["GET"]
+        
+        retry = Retry(**retry_kwargs)
         adapter = HTTPAdapter(max_retries=retry)
         session.mount('https://', adapter)
         session.mount('http://', adapter)
@@ -189,12 +201,24 @@ class CryptoAnalyzer:
         """获取成交额前N名的USDT合约币种及其成交额，添加SSL错误处理"""
         # 设置超时和重试
         session = requests.Session()
-        retry = Retry(
-            total=max_retries,
-            backoff_factor=0.5,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET"]
-        )
+        
+        # 处理Retry参数兼容性问题
+        retry_kwargs = {
+            'total': max_retries,
+            'backoff_factor': 0.5,
+            'status_forcelist': [429, 500, 502, 503, 504]
+        }
+        
+        # 尝试使用allowed_methods（新版本），如果失败则回退
+        try:
+            # 测试Retry是否接受allowed_methods参数
+            test_retry = Retry(**retry_kwargs, allowed_methods=["GET"])
+            retry_kwargs['allowed_methods'] = ["GET"]
+        except TypeError:
+            # 旧版本使用method_whitelist
+            retry_kwargs['method_whitelist'] = ["GET"]
+        
+        retry = Retry(**retry_kwargs)
         adapter = HTTPAdapter(max_retries=retry)
         session.mount('https://', adapter)
         session.mount('http://', adapter)
@@ -724,12 +748,24 @@ class CryptoAnalyzer:
             
         # 创建会话并配置重试机制
         session = requests.Session()
-        retry_strategy = Retry(
-            total=3,  # 总重试次数
-            status_forcelist=[429, 500, 502, 503, 504],  # 需要重试的HTTP状态码
-            allowed_methods=["POST"],  # 允许重试的HTTP方法
-            backoff_factor=1  # 重试间隔时间因子
-        )
+        
+        # 处理Retry参数兼容性问题
+        retry_kwargs = {
+            'total': 3,  # 总重试次数
+            'status_forcelist': [429, 500, 502, 503, 504],  # 需要重试的HTTP状态码
+            'backoff_factor': 1  # 重试间隔时间因子
+        }
+        
+        # 尝试使用allowed_methods（新版本），如果失败则回退
+        try:
+            # 测试Retry是否接受allowed_methods参数
+            test_retry = Retry(**retry_kwargs, allowed_methods=["POST"])
+            retry_kwargs['allowed_methods'] = ["POST"]
+        except TypeError:
+            # 旧版本使用method_whitelist
+            retry_kwargs['method_whitelist'] = ["POST"]
+        
+        retry_strategy = Retry(**retry_kwargs)
         adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("https://", adapter)
         session.mount("http://", adapter)
@@ -793,12 +829,24 @@ class CryptoAnalyzer:
             
         # 创建会话并配置重试机制
         session = requests.Session()
-        retry_strategy = Retry(
-            total=3,  # 总重试次数
-            status_forcelist=[429, 500, 502, 503, 504],  # 需要重试的HTTP状态码
-            allowed_methods=["GET"],  # 允许重试的HTTP方法
-            backoff_factor=1  # 重试间隔时间因子
-        )
+        
+        # 处理Retry参数兼容性问题
+        retry_kwargs = {
+            'total': 3,  # 总重试次数
+            'status_forcelist': [429, 500, 502, 503, 504],  # 需要重试的HTTP状态码
+            'backoff_factor': 1  # 重试间隔时间因子
+        }
+        
+        # 尝试使用allowed_methods（新版本），如果失败则回退
+        try:
+            # 测试Retry是否接受allowed_methods参数
+            test_retry = Retry(**retry_kwargs, allowed_methods=["GET"])
+            retry_kwargs['allowed_methods'] = ["GET"]
+        except TypeError:
+            # 旧版本使用method_whitelist
+            retry_kwargs['method_whitelist'] = ["GET"]
+        
+        retry_strategy = Retry(**retry_kwargs)
         adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("https://", adapter)
         session.mount("http://", adapter)
