@@ -564,97 +564,341 @@ class CryptoAnalyzer:
             print(f"计算{symbol}7天涨幅时出错: {e}")
             return 0.0
     
+    def detect_pinbar(self, data, index):
+        """检测Pinbar形态"""
+        if index < 1:
+            return False, None
+            
+        candle = data.iloc[index]
+        prev_candle = data.iloc[index-1]
+        
+        # 计算实体和影线长度
+        body_size = abs(candle['close'] - candle['open'])
+        high_low_range = candle['high'] - candle['low']
+        
+        # 实体较小，影线较长
+        if body_size < high_low_range * 0.3:
+            upper_shadow = candle['high'] - max(candle['close'], candle['open'])
+            lower_shadow = min(candle['close'], candle['open']) - candle['low']
+            
+            # 看涨Pinbar：下影线远长于上影线
+            if lower_shadow > upper_shadow * 2 and lower_shadow > body_size * 2:
+                return True, "bullish_pinbar"
+            # 看跌Pinbar：上影线远长于下影线
+            elif upper_shadow > lower_shadow * 2 and upper_shadow > body_size * 2:
+                return True, "bearish_pinbar"
+        
+        return False, None
+    
+    def detect_engulfing(self, data, index):
+        """检测吞没形态（反包到上一根K线的一半以上）"""
+        if index < 1:
+            return False, None
+            
+        current = data.iloc[index]
+        previous = data.iloc[index-1]
+        
+        # 判断当前K线是否完全吞没前一根K线的一半以上
+        current_body = abs(current['close'] - current['open'])
+        previous_body = abs(previous['close'] - previous['open'])
+        
+        # 看涨吞没：当前阳线吞没前一根阴线的一半以上
+        if current['close'] > current['open'] and previous['close'] < previous['open']:
+            # 收盘价高于前一根K线实体的50%位置
+            prev_mid = (previous['open'] + previous['close']) / 2
+            if current['close'] > prev_mid and current_body > previous_body * 0.5:
+                return True, "bullish_engulfing"
+        
+        # 看跌吞没：当前阴线吞没前一根阳线的一半以上
+        elif current['close'] < current['open'] and previous['close'] > previous['open']:
+            # 收盘价低于前一根K线实体的50%位置
+            prev_mid = (previous['open'] + previous['close']) / 2
+            if current['close'] < prev_mid and current_body > previous_body * 0.5:
+                return True, "bearish_engulfing"
+        
+        return False, None
+    
+    def detect_morning_evening_star(self, data, index):
+        """检测黄昏星和黎明星形态"""
+        if index < 2:
+            return False, None
+            
+        # 获取三根K线
+        first = data.iloc[index-2]
+        second = data.iloc[index-1]
+        third = data.iloc[index]
+        
+        # 黎明星（看涨反转）：第一根阴线，第二根星线，第三根阳线
+        if first['close'] < first['open'] and third['close'] > third['open']:
+            # 第二根K线是星线（实体小，上下影线明显）
+            second_body = abs(second['close'] - second['open'])
+            first_body = abs(first['close'] - first['open'])
+            
+            # 星线实体较小，且明显高开
+            if second_body < first_body * 0.5 and second['close'] > first['close']:
+                # 第三根阳线收盘价超过第一根阴线的一半
+                first_mid = (first['open'] + first['close']) / 2
+                if third['close'] > first_mid:
+                    return True, "morning_star"
+        
+        # 黄昏星（看跌反转）：第一根阳线，第二根星线，第三根阴线
+        elif first['close'] > first['open'] and third['close'] < third['open']:
+            # 第二根K线是星线（实体小，上下影线明显）
+            second_body = abs(second['close'] - second['open'])
+            first_body = abs(first['close'] - first['open'])
+            
+            # 星线实体较小，且明显低开
+            if second_body < first_body * 0.5 and second['close'] < first['close']:
+                # 第三根阴线收盘价低于第一根阳线的一半
+                first_mid = (first['open'] + first['close']) / 2
+                if third['close'] < first_mid:
+                    return True, "evening_star"
+        
+        return False, None
+    
+    def get_pattern_name(self, pattern_type):
+        """获取蜡烛图形态的中文名称"""
+        pattern_names = {
+            'bullish_pinbar': '看涨Pinbar',
+            'bearish_pinbar': '看跌Pinbar',
+            'bullish_engulfing': '看涨吞没',
+            'bearish_engulfing': '看跌吞没',
+            'morning_star': '黎明星',
+            'evening_star': '黄昏星'
+        }
+        return pattern_names.get(pattern_type, pattern_type)
+    
+    def detect_candle_patterns(self, data):
+        """检测所有蜡烛图形态（使用信号K和确认K机制，且判断极点是否为近期极值）"""
+        if len(data) < 10:  # 需要至少10根K线来判断近期极值
+            return None
+            
+        # 检查最后三根K线
+        last_index = len(data) - 1
+        
+        # 检查倒数第二根K线是否为信号K（信号K可以是pinbar或吞没形态）
+        signal_index = last_index - 1
+        if signal_index >= 1:  # 确保索引有效
+            # 检测信号K - Pinbar
+            is_signal_pinbar, signal_type = self.detect_pinbar(data, signal_index)
+            # 检测信号K - 吞没形态
+            is_signal_engulfing, engulfing_signal_type = self.detect_engulfing(data, signal_index)
+            
+            # 如果有信号K
+            if is_signal_pinbar or is_signal_engulfing:
+                # 分别处理不同类型的信号，确保都进行极值判断
+                if is_signal_pinbar:
+                    # Pinbar信号
+                    if self._is_recent_extreme(data, signal_index, signal_type):
+                        # 检查最后一根K线是否为确认K
+                        confirmation_index = last_index
+                        if self._is_confirmation_candle(data, confirmation_index, signal_type):
+                            return signal_type
+                
+                if is_signal_engulfing:
+                    # 吞没形态信号
+                    if self._is_recent_extreme(data, signal_index, engulfing_signal_type):
+                        # 检查最后一根K线是否为确认K
+                        confirmation_index = last_index
+                        if self._is_confirmation_candle(data, confirmation_index, engulfing_signal_type):
+                            return engulfing_signal_type
+        
+        # 检查倒数第三根K线是否为信号K（如果倒数第二根是确认K的话）
+        signal_index_prev = last_index - 2
+        if signal_index_prev >= 1:
+            # 检测信号K - Pinbar
+            is_signal_pinbar_prev, signal_type_prev = self.detect_pinbar(data, signal_index_prev)
+            # 检测信号K - 吞没形态
+            is_signal_engulfing_prev, engulfing_signal_type_prev = self.detect_engulfing(data, signal_index_prev)
+            
+            # 如果有信号K
+            if is_signal_pinbar_prev or is_signal_engulfing_prev:
+                # 分别处理不同类型的信号，确保都进行极值判断
+                if is_signal_pinbar_prev:
+                    # Pinbar信号
+                    if self._is_recent_extreme(data, signal_index_prev, signal_type_prev):
+                        # 检查倒数第二根K线是否为确认K
+                        confirmation_index_prev = last_index - 1
+                        if self._is_confirmation_candle(data, confirmation_index_prev, signal_type_prev):
+                            return signal_type_prev
+                
+                if is_signal_engulfing_prev:
+                    # 吞没形态信号
+                    if self._is_recent_extreme(data, signal_index_prev, engulfing_signal_type_prev):
+                        # 检查倒数第二根K线是否为确认K
+                        confirmation_index_prev = last_index - 1
+                        if self._is_confirmation_candle(data, confirmation_index_prev, engulfing_signal_type_prev):
+                            return engulfing_signal_type_prev
+        
+        # 没有检测到任何形态
+        return None
+    
+    def _is_recent_extreme(self, data, signal_index, signal_type):
+        """判断信号K的极点是否为近期极值点
+        
+        对于看空信号（bearish_pinbar, bearish_engulfing）：判断信号K的高点是否为最近10根K线的最高点
+        对于看多信号（bullish_pinbar, bullish_engulfing）：判断信号K的低点是否为最近10根K线的最低点
+        """
+        # 计算起始索引（取信号K往前9根K线，总共10根）
+        start_index = max(0, signal_index - 9)
+        
+        # 获取最近10根K线的子数据
+        recent_data = data.iloc[start_index:signal_index+1]
+        
+        # 获取信号K的极点值
+        signal_candle = data.iloc[signal_index]
+        
+        # 根据信号类型判断是否为近期极值
+        if signal_type in ['bearish_pinbar', 'bearish_engulfing']:
+            # 看空信号：判断高点是否为最近10根K线的最高点
+            signal_high = signal_candle['high']
+            recent_highs = recent_data['high']
+            is_highest = signal_high == recent_highs.max()
+            return is_highest
+        
+        elif signal_type in ['bullish_pinbar', 'bullish_engulfing']:
+            # 看多信号：判断低点是否为最近10根K线的最低点
+            signal_low = signal_candle['low']
+            recent_lows = recent_data['low']
+            is_lowest = signal_low == recent_lows.min()
+            return is_lowest
+        
+        # 其他情况返回False
+        return False
+    
+    def _is_confirmation_candle(self, data, index, signal_type):
+        """判断是否为确认K线
+        
+        确认K的定义：
+        1. 单根同向pinbar
+        2. 十字星
+        3. 多头信号则阳线，空头信号则阴线，但不能是反向的pinbar
+        """
+        if index < 1 or index >= len(data):
+            return False
+        
+        current = data.iloc[index]
+        prev = data.iloc[index-1]
+        
+        # 检查是否为同向pinbar
+        is_pinbar, pinbar_type = self.detect_pinbar(data, index)
+        if is_pinbar:
+            # 判断pinbar方向是否与信号方向一致
+            is_bullish_signal = signal_type == 'bullish_pinbar' or signal_type == 'bullish_engulfing'
+            is_bullish_pinbar = pinbar_type == 'bullish_pinbar'
+            
+            if (is_bullish_signal and is_bullish_pinbar) or (not is_bullish_signal and not is_bullish_pinbar):
+                return True
+        
+        # 检查是否为十字星（实体很小，影线不考虑）
+        body_size = abs(current['close'] - current['open'])
+        range_size = current['high'] - current['low']
+        is_doji = body_size / range_size < 0.2  # 实体小于总范围的20%
+        if is_doji:
+            return True
+        
+        # 检查是否为同向K线，但不是反向pinbar
+        is_bullish_signal = signal_type == 'bullish_pinbar' or signal_type == 'bullish_engulfing'
+        is_bullish_candle = current['close'] > current['open']
+        
+        # 判断是否为同向K线
+        is_same_direction = (is_bullish_signal and is_bullish_candle) or (not is_bullish_signal and not is_bullish_candle)
+        
+        # 确保不是反向pinbar
+        if is_pinbar:
+            is_bullish_pinbar = pinbar_type == 'bullish_pinbar'
+            is_opposite_direction = (is_bullish_signal and not is_bullish_pinbar) or (not is_bullish_signal and is_bullish_pinbar)
+            if is_opposite_direction:
+                return False
+        
+        return is_same_direction
+    
     def analyze_single_currency(self, symbol):
         """分析单个币种，返回分析结果"""
         try:
             print(f"开始分析币种: {symbol}")
             
-            # 大周期是4h，小周期是15m
+            # 大周期是4h，小周期为15m
             four_hour_interval = '4h'  # 大周期
-            quarter_hour_interval = '15m'  # 小周期
+            fifteen_min_interval = '15m'   # 小周期
             
             # 获取4小时周期数据（大周期）
             print(f"正在获取{symbol}的4小时K线数据...")
             four_hour_data = self.get_futures_klines(symbol, four_hour_interval, limit=50)
             # 获取15分钟周期数据（小周期）
             print(f"正在获取{symbol}的15分钟K线数据...")
-            quarter_hour_data = self.get_futures_klines(symbol, quarter_hour_interval, limit=200)
+            fifteen_min_data = self.get_futures_klines(symbol, fifteen_min_interval, limit=100)
             
-            if four_hour_data is None or quarter_hour_data is None:
+            if four_hour_data is None or fifteen_min_data is None:
                 print(f"无法获取{symbol}的完整数据，跳过")
-                return symbol, None, False, None, None, None, False, False, quarter_hour_interval
+                return symbol, None, False, None, None, None, False, False, fifteen_min_interval
             
             # 降低数据量要求
-            if len(four_hour_data) < 20 or len(quarter_hour_data) < 50:
+            if len(four_hour_data) < 20 or len(fifteen_min_data) < 20:
                 print(f"{symbol}数据量不足，跳过")
-                return symbol, None, False, None, None, None, False, False, quarter_hour_interval
+                return symbol, None, False, None, None, None, False, False, fifteen_min_interval
             
-            # 计算大周期4小时MACD
-            four_hour_macd_line, four_hour_macd_signal, _ = self.calculate_macd(four_hour_data)
-            # 计算小周期15分钟MACD
-            quarter_hour_macd_line, quarter_hour_macd_signal, _ = self.calculate_macd(quarter_hour_data)
+            # 计算大周期4小时MACD - 只需要dif值
+            four_hour_macd_line, _, _ = self.calculate_macd(four_hour_data)
             
-            # 判断大周期MACD方向
-            four_hour_macd_bullish = four_hour_macd_line.iloc[-1] > four_hour_macd_signal.iloc[-1]
+            # 新的大周期判定方式：dif > 0 多头，dif < 0 空头
+            four_hour_macd_value = four_hour_macd_line.iloc[-1]
+            four_hour_macd_bullish = four_hour_macd_value > 0
             macd_status = "多头" if four_hour_macd_bullish else "空头"
             
-            # 获取大周期最新的MACD值
-            four_hour_macd_value = four_hour_macd_line.iloc[-1]
-            
             # 添加详细日志
-            print(f"{symbol} 4小时MACD值: {four_hour_macd_value:.6f}, 状态: {macd_status}")
-            print(f"{symbol} 4小时MACD线: {four_hour_macd_line.iloc[-1]:.6f}, 信号线: {four_hour_macd_signal.iloc[-1]:.6f}")
+            print(f"{symbol} 4小时MACD(DIF)值: {four_hour_macd_value:.6f}, 状态: {macd_status}")
             
-            # 检测小周期15分钟MACD交叉
-            macd_cross = self.detect_macd_cross(quarter_hour_macd_line, quarter_hour_macd_signal)
-            is_golden_cross = macd_cross == 'golden_cross'
-            is_death_cross = macd_cross == 'death_cross'
+            # 检测小周期15分钟的裸K信号
+            candle_pattern = self.detect_candle_patterns(fifteen_min_data)
+            print(f"{symbol} 15分钟K线形态: {candle_pattern}")
             
             # 简化信号检查逻辑
             is_buy_signal = False
             is_sell_signal = False
+            pattern_type = None
             
-            # 买入信号：大周期多头 + 小周期金叉（放宽0轴要求）
+            # 买入信号：大周期多头 + 小周期多头裸K信号
             if four_hour_macd_bullish:
-                if is_golden_cross:
-                    is_buy_signal = self.check_buy_signal(quarter_hour_macd_line, quarter_hour_macd_signal, quarter_hour_data)
-                else:
-                    # 额外检查：如果大周期很强，但小周期还没形成金叉，可以考虑作为潜在买入信号
-                    recent_macd_trend = (quarter_hour_macd_line.iloc[-1] > quarter_hour_macd_line.iloc[-2] > quarter_hour_macd_line.iloc[-3])
-                    close_to_signal = abs(quarter_hour_macd_line.iloc[-1] - quarter_hour_macd_signal.iloc[-1]) / max(abs(quarter_hour_macd_signal.iloc[-1]), 0.0001) * 100 < 0.5
-                    
-                    if recent_macd_trend and close_to_signal:
-                        print(f"{symbol} 检测到潜在买入信号：大周期多头，小周期MACD接近交叉")
-                        is_buy_signal = True
+                if candle_pattern in ['bullish_pinbar', 'bullish_engulfing', 'morning_star']:
+                    print(f"{symbol} 检测到买入信号：大周期多头，小周期出现{self.get_pattern_name(candle_pattern)}")
+                    is_buy_signal = True
+                    pattern_type = candle_pattern
             
-            # 卖出信号：大周期空头 + 小周期死叉（放宽0轴要求）
-            if not four_hour_macd_bullish:
-                if is_death_cross:
-                    is_sell_signal = self.check_sell_signal(quarter_hour_macd_line, quarter_hour_macd_signal, quarter_hour_data)
-                else:
-                    # 额外检查：如果大周期很弱，但小周期还没形成死叉，可以考虑作为潜在卖出信号
-                    recent_macd_trend = (quarter_hour_macd_line.iloc[-1] < quarter_hour_macd_line.iloc[-2] < quarter_hour_macd_line.iloc[-3])
-                    close_to_signal = abs(quarter_hour_macd_line.iloc[-1] - quarter_hour_macd_signal.iloc[-1]) / max(abs(quarter_hour_macd_signal.iloc[-1]), 0.0001) * 100 < 0.5
-                    
-                    if recent_macd_trend and close_to_signal:
-                        print(f"{symbol} 检测到潜在卖出信号：大周期空头，小周期MACD接近交叉")
-                        is_sell_signal = True
+            # 卖出信号：大周期空头 + 小周期空头裸K信号
+            else:
+                if candle_pattern in ['bearish_pinbar', 'bearish_engulfing', 'evening_star']:
+                    print(f"{symbol} 检测到卖出信号：大周期空头，小周期出现{self.get_pattern_name(candle_pattern)}")
+                    is_sell_signal = True
+                    pattern_type = candle_pattern
             
             # 添加信号检查结果日志
             print(f"{symbol} 信号检查结果 - 买入信号: {is_buy_signal}, 卖出信号: {is_sell_signal}")
             
-            # 分析完成，返回结果
-            return symbol, macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish, is_buy_signal, is_sell_signal, quarter_hour_interval
+            # 分析完成，返回结果（保持原返回格式以兼容其他代码）
+            return symbol, macd_status, is_buy_signal, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, fifteen_min_interval
         except Exception as e:
             print(f"分析{symbol}时出错: {e}")
             import traceback
             traceback.print_exc()
-            return symbol, None, False, None, None, None, False, False, None
+            return symbol, None, False, None, None, None, False, False, fifteen_min_interval
+            
+    def get_pattern_name(self, pattern_type):
+        """获取K线形态的中文名称"""
+        pattern_names = {
+            'bullish_pinbar': '看涨Pinbar',
+            'bearish_pinbar': '看跌Pinbar',
+            'bullish_engulfing': '看涨吞没',
+            'bearish_engulfing': '看跌吞没',
+            'morning_star': '黎明星',
+            'evening_star': '黄昏星'
+        }
+        return pattern_names.get(pattern_type, pattern_type)
     
     def check_4h_bullish_1h_goldencross(self, symbol):
-        """检查特定信号：大周期MACD状态和小周期MACD交叉"""
-        symbol, macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish = self.analyze_single_currency(symbol)
-        return macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish
+        """检查特定信号：大周期MACD状态和小周期裸K形态"""
+        symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish = self.analyze_single_currency(symbol)
+        return macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish
     
     def plot_chart(self, symbol, main_interval, main_data, four_x_data, analysis_result):
         """绘制图表"""
@@ -903,16 +1147,19 @@ class CryptoAnalyzer:
     def run(self):
         """运行主程序"""
         print("欢迎使用币安合约币种筛选工具")
-        print("功能：筛选USDT合约成交额前100名币种，按成交额排序，检测4小时MACD状态（多头左侧/右侧、空头左侧/右侧）和15分钟MACD交叉信号")
-        print("每小时整点自动运行一次，并将结果推送到电报")
+        print("功能：筛选USDT合约成交额前100名币种，按成交额排序，检测4小时MACD(DIF)状态（多头>0/空头<0）和15分钟裸K信号（Pinbar、吞没、黄昏星/黎明星）")
+        print("每15分钟自动运行一次（在0分、15分、30分、45分），并将结果推送到电报")
         print("每5分钟检查一次持仓盈亏率")
         
         # 首次运行一次
         self.execute_filter()
         
-        # 设置定时任务，每小时整点运行
-        print("\n定时任务已设置，将在每小时整点自动运行...")
+        # 设置定时任务，每小时的0分、15分、30分、45分运行
+        print("\n定时任务已设置，将在每小时的0分、15分、30分、45分自动运行...")
         schedule.every().hour.at(":00").do(self.execute_filter)
+        schedule.every().hour.at(":15").do(self.execute_filter)
+        schedule.every().hour.at(":30").do(self.execute_filter)
+        schedule.every().hour.at(":45").do(self.execute_filter)
         
         # 设置每5分钟检查一次持仓盈亏
         print("定时任务已设置，将每5分钟检查一次持仓盈亏...")
@@ -1283,7 +1530,7 @@ class CryptoAnalyzer:
                 if symbol in analysis_results:
                     result = analysis_results[symbol]
                     if result is not None and len(result) >= 9:
-                        _, macd_status, is_golden_cross, _, macd_cross, macd_bullish, _, _, cross_interval = result
+                        _, macd_status, is_golden_cross, _, pattern_type, macd_bullish, _, _, cross_interval = result
                         
                         # 获取持仓类型
                         position_type = position_info.get('position_type', 'long')
@@ -1292,8 +1539,8 @@ class CryptoAnalyzer:
                         macd_bullish_state = macd_bullish
                         macd_bearish_state = not macd_bullish
                         
-                        # 检测MACD死叉
-                        is_death_cross = macd_cross == 'death_cross'
+                        # 检测卖出信号（看跌形态）
+                        is_sell_signal = pattern_type in ['bearish_pinbar', 'bearish_engulfing', 'evening_star']
                         
                         # 统一使用4小时MACD判断和15分钟MACD交叉
                         macd_interval = '4h'  # MACD判断周期
@@ -1314,9 +1561,9 @@ class CryptoAnalyzer:
                         
                         # 多单持仓的止盈止损条件
                         if position_type == 'long':
-                            if is_death_cross:
+                            if is_sell_signal:
                                 signal_type = "🚨 止盈止损"
-                                trigger_condition = f"{cross_interval} MACD死叉"
+                                trigger_condition = f"{cross_interval} {self.get_pattern_name(pattern_type)}"
                             elif macd_bearish_state:
                                 signal_type = "⚠️  趋势转空"
                                 trigger_condition = f"{macd_interval} MACD空头 (DIF={current_dif:.4f}, DEA={current_dea:.4f})"
@@ -1402,8 +1649,8 @@ class CryptoAnalyzer:
                 print(f"分析进度: {i}/{len(top_currencies)}", end='\r')
                 
                 try:
-                    # 接收分析结果，包含是否满足买入/卖出信号
-                    symbol, macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval = future.result()
+                    # 接收分析结果，包含是否满足买入/卖出信号和裸K形态
+                    symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval = future.result()
                     
                     if four_hour_macd_bullish is None:
                         # 无法获取数据
@@ -1413,10 +1660,10 @@ class CryptoAnalyzer:
                     with lock:
                         total_analyzed += 1
                         
-                        is_death_cross = macd_cross == 'death_cross'
+                        # 更新计数逻辑以适应裸K形态信号
                         if is_golden_cross:
                             golden_cross_count += 1
-                        elif is_death_cross:
+                        if is_sell_signal:
                             death_cross_count += 1
                         
                         # 判断信号类型
@@ -1424,13 +1671,15 @@ class CryptoAnalyzer:
                         
                         # 使用analyze_single_currency中计算好的信号
                         if is_buy_signal:
-                            signal = "买入信号：大周期多头+小周期金叉"
+                            pattern_name = self.get_pattern_name(pattern_type) if hasattr(self, 'get_pattern_name') else pattern_type
+                            signal = f"买入信号：大周期多头+1h{pattern_name}"
                             buy_signal_count += 1
-                            buy_signal_symbols.append((symbol, macd_status, "MACD金叉", four_hour_macd_value))
+                            buy_signal_symbols.append((symbol, macd_status, pattern_name, four_hour_macd_value, pattern_type))
                         elif is_sell_signal:
-                            signal = "卖出信号：大周期空头+小周期死叉"
+                            pattern_name = self.get_pattern_name(pattern_type) if hasattr(self, 'get_pattern_name') else pattern_type
+                            signal = f"卖出信号：大周期空头+1h{pattern_name}"
                             sell_signal_count += 1
-                            sell_signal_symbols.append((symbol, macd_status, "MACD死叉", four_hour_macd_value))
+                            sell_signal_symbols.append((symbol, macd_status, pattern_name, four_hour_macd_value, pattern_type))
                         
                         # 更新统计计数
                         if macd_status == "多头":
@@ -1438,11 +1687,18 @@ class CryptoAnalyzer:
                         else:  # 空头
                             bearish_count += 1
                     
-                    # 格式化输出
-                    macd_cross_status = "金叉" if macd_cross == 'golden_cross' else "死叉" if macd_cross == 'death_cross' else "无交叉"
+                    # 格式化输出 - 根据裸K形态和信号判断状态
+                    if is_buy_signal:
+                        pattern_name = self.get_pattern_name(pattern_type) if pattern_type else "看涨信号"
+                        macd_cross_status = f"看涨{pattern_name}"
+                    elif is_sell_signal:
+                        pattern_name = self.get_pattern_name(pattern_type) if pattern_type else "看跌信号"
+                        macd_cross_status = f"看跌{pattern_name}"
+                    else:
+                        macd_cross_status = "无信号"
                     
-                    # 存储分析结果，包含MACD交叉周期信息
-                    analysis_results[symbol] = (symbol, macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval)
+                    # 存储分析结果，包含裸K形态信息
+                    analysis_results[symbol] = (symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval)
                     
                     # 打印详细信息 - 只有在满足买入/卖出信号时才显示交叉信息
                     if signal == "买入信号" or signal == "卖出信号":
@@ -1463,34 +1719,26 @@ class CryptoAnalyzer:
         print(f"买入信号币种: {buy_signal_count}个")
         print(f"卖出信号币种: {sell_signal_count}个")
         
-        # 按MACD交叉周期分类信号列表
+        # 按分析周期分类信号列表
         # 多头信号分类
-        buy_signal_1h = []  # 15分钟MACD交叉的买入信号
+        buy_signal_1h = []  # 1小时裸K信号的买入信号
         
-        sell_signal_1h = [] # 15分钟MACD交叉的卖出信号
+        sell_signal_1h = [] # 1小时裸K信号的卖出信号
         
-        # 重新构建包含MACD交叉周期的信号列表
-        for symbol, _, _, _ in buy_signal_symbols:
+        # 重新构建包含分析周期的信号列表
+        for symbol, status, pattern_name, m_val, pattern_type in buy_signal_symbols:
             if symbol in analysis_results:
                 result = analysis_results[symbol]
                 if len(result) >= 9:
                     cross_interval = result[8]
-                    for i, (s, status, macd, m_val) in enumerate(buy_signal_symbols):
-                        if s == symbol:
-                            # 统一使用15分钟MACD交叉
-                            buy_signal_1h.append((symbol, status, macd, m_val, cross_interval))
-                            break
+                    buy_signal_1h.append((symbol, status, pattern_name, m_val, cross_interval, pattern_type))
 
-        for symbol, _, _, _ in sell_signal_symbols:
+        for symbol, status, pattern_name, m_val, pattern_type in sell_signal_symbols:
             if symbol in analysis_results:
                 result = analysis_results[symbol]
                 if len(result) >= 9:
                     cross_interval = result[8]
-                    for i, (s, status, macd, m_val) in enumerate(sell_signal_symbols):
-                        if s == symbol:
-                            # 统一使用15分钟MACD交叉
-                            sell_signal_1h.append((symbol, status, macd, m_val, cross_interval))
-                            break
+                    sell_signal_1h.append((symbol, status, pattern_name, m_val, cross_interval, pattern_type))
         
         # 对分类后的信号列表进行排序
         buy_signal_1h.sort(key=lambda x: x[3] if x[3] is not None else float('inf'))
@@ -1499,29 +1747,29 @@ class CryptoAnalyzer:
         # 生成钉钉通知内容
         dingtalk_content = f"### 加密货币信号提醒 - {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
         
-        # 输出1小时MACD交叉的买入信号
+        # 输出1小时裸K信号的买入信号
         if buy_signal_1h:
             print("\n⚠️  满足条件的买入信号币种：")
-            print("\n15分钟MACD买入信号：")
-            for symbol, status, macd, _, _ in buy_signal_1h:
-                print(f"   • {symbol} ({status}) - {macd}")
+            print("\n1小时裸K买入信号：")
+            for symbol, status, pattern_name, _, _, _ in buy_signal_1h:
+                print(f"   • {symbol} ({status}) - {pattern_name}")
             
             # 添加到钉钉通知
-            dingtalk_content += "#### 🟢 15分钟MACD多头信号：\n"
-            for symbol, macd_status, macd, _, _ in buy_signal_1h:
-                dingtalk_content += f"- {symbol} ({macd_status}) - MACD: {macd}\n"
+            dingtalk_content += "#### 🟢 1小时裸K多头信号：\n"
+            for symbol, macd_status, pattern_name, macd_value, _, _ in buy_signal_1h:
+                dingtalk_content += f"- {symbol} ({macd_status}) - {pattern_name} - DIF: {macd_value:.4f}\n"
         
-        # 输出1小时MACD交叉的卖出信号
+        # 输出1小时裸K信号的卖出信号
         if sell_signal_1h:
             print("\n⚠️  满足条件的卖出信号币种：")
-            print("\n15分钟MACD卖出信号：")
-            for symbol, status, macd, _, _ in sell_signal_1h:
-                print(f"   • {symbol} ({status}) - {macd}")
+            print("\n1小时裸K卖出信号：")
+            for symbol, status, pattern_name, _, _, _ in sell_signal_1h:
+                print(f"   • {symbol} ({status}) - {pattern_name}")
             
             # 添加到钉钉通知
-            dingtalk_content += "\n#### 🔴 15分钟MACD空头信号：\n"
-            for symbol, macd_status, macd, _, _ in sell_signal_1h:
-                dingtalk_content += f"- {symbol} ({macd_status}) - MACD: {macd}\n"
+            dingtalk_content += "\n#### 🔴 1小时裸K空头信号：\n"
+            for symbol, macd_status, pattern_name, macd_value, _, _ in sell_signal_1h:
+                dingtalk_content += f"- {symbol} ({macd_status}) - {pattern_name} - DIF: {macd_value:.4f}\n"
         
         if buy_signal_symbols or sell_signal_symbols:
             pass
@@ -1791,6 +2039,7 @@ def send_urgent_notification(symbol="BTCUSDT", message="紧急提醒"):
 def test_signal_generation():
     """测试信号生成逻辑的函数"""
     print("\n===== 开始测试信号生成逻辑 =====")
+    print("当前策略：大周期4小时MACD(DIF>0多头/DIF<0空头) + 小周期1小时裸K信号")
     
     # 配置参数
     DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=02fcc926215099c4d0315e453e86aa6d9af934ad538de89b13f67bc3d131ee07"
@@ -1811,15 +2060,23 @@ def test_signal_generation():
         result = analyzer.analyze_single_currency(symbol)
         if result:
             # 根据实际返回值数量解包
-            if len(result) >= 8:
-                symbol, macd_status, is_golden_cross, four_hour_macd_value, macd_cross, four_hour_macd_bullish, is_buy_signal, is_sell_signal = result[:8]
+            if len(result) >= 9:
+                symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, interval = result
                 
                 print(f"\n{symbol} 分析结果:")
-                print(f"MACD状态: {macd_status}")
-                print(f"4小时MACD值: {four_hour_macd_value}")
-                print(f"MACD交叉状态: {macd_cross}")
+                print(f"大周期状态: {macd_status} (MACD DIF值: {four_hour_macd_value:.6f})")
+                print(f"小周期K线形态: {pattern_type}")
+                print(f"小周期分析周期: {interval}")
                 print(f"买入信号: {is_buy_signal}")
                 print(f"卖出信号: {is_sell_signal}")
+                
+                # 添加策略逻辑说明
+                if is_buy_signal:
+                    print(f"信号触发原因: 大周期{macd_status} + 小周期出现看涨裸K信号")
+                elif is_sell_signal:
+                    print(f"信号触发原因: 大周期{macd_status} + 小周期出现看跌裸K信号")
+                else:
+                    print("未触发信号: 未满足大周期方向与小周期裸K信号的匹配条件")
                 
                 if is_buy_signal:
                     print(f"✅ {symbol} 生成了买入信号！")
