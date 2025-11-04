@@ -905,11 +905,17 @@ class CryptoAnalyzer:
             macd_status = "多头" if four_hour_macd_bullish else "空头"
             
             # 添加详细日志
-            print(f"{symbol} 4小时MACD(DIF)值: {four_hour_macd_value:.6f}, 状态: {macd_status}")
+            print(f"{symbol} 4小时MACD状态: {macd_status}")
+            
+            # 计算小周期MACD
+            small_macd_line, small_signal_line, _ = self.calculate_macd(small_data)
+            small_macd_dif = small_macd_line.iloc[-1]
+            small_macd_dea = small_signal_line.iloc[-1]
+            small_macd_bullish = small_macd_dif > small_macd_dea
             
             # 检测小周期的裸K信号（根据排名选择的周期）
             candle_pattern = self.detect_candle_patterns(small_data)
-            print(f"{symbol} {small_interval}K线形态: {candle_pattern}")
+            print(f"{symbol} {small_interval}K线形态: {candle_pattern}，小周期MACD状态: {'DIF>DEA' if small_macd_bullish else 'DIF<DEA'}")
             
             # 增加额外的价格信息日志，帮助调试
             if len(small_data) >= 3:
@@ -922,26 +928,32 @@ class CryptoAnalyzer:
             is_sell_signal = False
             pattern_type = None
             
-            # 买入信号：小周期多头裸K信号 + 大周期多头
-            if candle_pattern in ['bullish_pinbar', 'bullish_engulfing', 'morning_star'] and four_hour_macd_bullish:
-                print(f"{symbol} 检测到买入信号：小周期出现{self.get_pattern_name(candle_pattern)} + 大周期多头")
+            # 买入信号：小周期多头裸K信号 + 大周期多头 + 小周期MACD DIF>DEA
+            if candle_pattern in ['bullish_pinbar', 'bullish_engulfing', 'morning_star'] and four_hour_macd_bullish and small_macd_bullish:
+                print(f"{symbol} 检测到买入信号：{small_interval}周期出现{self.get_pattern_name(candle_pattern)} + 大周期多头 + 小周期MACD DIF>DEA")
                 is_buy_signal = True
                 pattern_type = candle_pattern
-            # 卖出信号：小周期空头裸K信号 + 大周期空头
-            elif candle_pattern in ['bearish_pinbar', 'bearish_engulfing', 'evening_star'] and not four_hour_macd_bullish:
-                print(f"{symbol} 检测到卖出信号：小周期出现{self.get_pattern_name(candle_pattern)} + 大周期空头")
+            # 卖出信号：小周期空头裸K信号 + 大周期空头 + 小周期MACD DIF<DEA
+            elif candle_pattern in ['bearish_pinbar', 'bearish_engulfing', 'evening_star'] and not four_hour_macd_bullish and not small_macd_bullish:
+                print(f"{symbol} 检测到卖出信号：{small_interval}周期出现{self.get_pattern_name(candle_pattern)} + 大周期空头 + 小周期MACD DIF<DEA")
                 is_sell_signal = True
                 pattern_type = candle_pattern
-            # 小周期有信号但大周期方向不匹配
-            elif candle_pattern in ['bullish_pinbar', 'bullish_engulfing', 'morning_star'] and not four_hour_macd_bullish:
-                print(f"{symbol} 小周期出现{self.get_pattern_name(candle_pattern)}，但大周期不是多头，不生成买入信号")
-            elif candle_pattern in ['bearish_pinbar', 'bearish_engulfing', 'evening_star'] and four_hour_macd_bullish:
-                print(f"{symbol} 小周期出现{self.get_pattern_name(candle_pattern)}，但大周期不是空头，不生成卖出信号")
+            # 小周期有信号但大周期方向不匹配或小周期MACD条件不满足
+            elif candle_pattern in ['bullish_pinbar', 'bullish_engulfing', 'morning_star']:
+                if not four_hour_macd_bullish:
+                    print(f"{symbol} {small_interval}周期出现{self.get_pattern_name(candle_pattern)}，但大周期不是多头，不生成买入信号")
+                elif not small_macd_bullish:
+                    print(f"{symbol} {small_interval}周期出现{self.get_pattern_name(candle_pattern)}，但小周期MACD DIF<DEA，不生成买入信号")
+            elif candle_pattern in ['bearish_pinbar', 'bearish_engulfing', 'evening_star']:
+                if four_hour_macd_bullish:
+                    print(f"{symbol} {small_interval}周期出现{self.get_pattern_name(candle_pattern)}，但大周期不是空头，不生成卖出信号")
+                elif small_macd_bullish:
+                    print(f"{symbol} {small_interval}周期出现{self.get_pattern_name(candle_pattern)}，但小周期MACD DIF>DEA，不生成卖出信号")
             else:
-                print(f"{symbol} 未检测到明确的小周期形态信号")
+                print(f"{symbol} 未检测到明确的{small_interval}周期形态信号")
             
             # 输出大周期信息
-            print(f"{symbol} 大周期4小时MACD状态: {macd_status} (DIF={four_hour_macd_value:.6f})")
+            print(f"{symbol} 大周期4小时MACD状态: {macd_status}")
             
             # 添加详细的信号检查结果日志
             print(f"{symbol} 信号检查结果 - 买入信号: {is_buy_signal}, 卖出信号: {is_sell_signal}, 最终形态类型: {pattern_type}")
@@ -1055,7 +1067,7 @@ class CryptoAnalyzer:
                     print(f"{symbol:<10} {result_dict['interval']:<10} {result_dict['direction']:<15} {result_dict['macd_cross_status']:<15} {'暂无':<40}")
         print("="*100)
     
-    def send_dingtalk_notification(self, message, title="加密货币分析提醒"):
+    def send_dingtalk_notification(self, message, title="价格行为分析提醒"):
         """发送钉钉通知，添加重试机制和SSL错误处理"""
         if not self.dingtalk_webhook:
             print("未配置钉钉webhook，跳过通知发送")
@@ -1759,24 +1771,24 @@ class CryptoAnalyzer:
                             bearish_count += 1
                     
                     # 格式化输出 - 根据裸K形态和信号判断状态
-                    if is_buy_signal:
-                        pattern_name = self.get_pattern_name(pattern_type) if pattern_type else "看涨信号"
-                        macd_cross_status = f"看涨{pattern_name}"
-                    elif is_sell_signal:
-                        pattern_name = self.get_pattern_name(pattern_type) if pattern_type else "看跌信号"
-                        macd_cross_status = f"看跌{pattern_name}"
-                    else:
-                        macd_cross_status = "无信号"
-                    
-                    # 存储分析结果，包含裸K形态信息
-                    analysis_results[symbol] = (symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval)
-                    
-                    # 打印详细信息 - 只有在满足买入/卖出信号时才显示交叉信息
-                    if signal == "买入信号" or signal == "卖出信号":
-                        print(f"{symbol:<15} {macd_status:<15} {four_hour_macd_value:<12.4f} {macd_cross_status:<15} {signal:<25}")
-                    else:
-                        # 不满足信号条件时，不显示交叉状态
-                        print(f"{symbol:<15} {macd_status:<15} {four_hour_macd_value:<12.4f} {'-':<15} {signal:<25}")
+                        if is_buy_signal:
+                            pattern_name = self.get_pattern_name(pattern_type) if pattern_type else "看涨信号"
+                            macd_cross_status = f"看涨{pattern_name}"
+                        elif is_sell_signal:
+                            pattern_name = self.get_pattern_name(pattern_type) if pattern_type else "看跌信号"
+                            macd_cross_status = f"看跌{pattern_name}"
+                        else:
+                            macd_cross_status = "无信号"
+                        
+                        # 存储分析结果，包含裸K形态信息
+                        analysis_results[symbol] = (symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval)
+                        
+                        # 打印详细信息 - 只有在满足买入/卖出信号时才显示交叉信息
+                        if signal == "买入信号" or signal == "卖出信号":
+                            print(f"{symbol:<15} {macd_status:<15} {cross_interval:<12} {macd_cross_status:<15} {signal:<25}")
+                        else:
+                            # 不满足信号条件时，不显示交叉状态
+                            print(f"{symbol:<15} {macd_status:<15} {cross_interval:<12} {'-':<15} {signal:<25}")
                     
                 except Exception as e:
                     print(f"处理{symbol}时出错: {e}")
@@ -1821,26 +1833,26 @@ class CryptoAnalyzer:
         # 输出裸K信号的买入信号（根据市值排名使用不同周期）
         if buy_signal_1h:
             print("\n⚠️  满足条件的买入信号币种：")
-            print("\n裸K买入信号：")
+            print("\n价格行为买入信号：")
             for symbol, status, pattern_name, _, _, _ in buy_signal_1h:
                 print(f"   • {symbol} ({status}) - {pattern_name}")
             
             # 添加到钉钉通知
-            dingtalk_content += "#### 🟢 裸K多头信号：\n"
-            for symbol, macd_status, pattern_name, macd_value, _, _ in buy_signal_1h:
-                dingtalk_content += f"- {symbol} ({macd_status}) - {pattern_name} - DIF: {macd_value:.4f}\n"
+            dingtalk_content += "#### 🟢 价格行为多头信号：\n"
+            for symbol, macd_status, pattern_name, _, cross_interval, _ in buy_signal_1h:
+                dingtalk_content += f"- {symbol} ({macd_status}) - {cross_interval}{pattern_name}\n"
         
         # 输出裸K信号的卖出信号（根据市值排名使用不同周期）
         if sell_signal_1h:
             print("\n⚠️  满足条件的卖出信号币种：")
-            print("\n裸K卖出信号：")
+            print("\n价格行为卖出信号：")
             for symbol, status, pattern_name, _, _, _ in sell_signal_1h:
                 print(f"   • {symbol} ({status}) - {pattern_name}")
             
             # 添加到钉钉通知
-            dingtalk_content += "\n#### 🔴 裸K空头信号：\n"
-            for symbol, macd_status, pattern_name, macd_value, _, _ in sell_signal_1h:
-                dingtalk_content += f"- {symbol} ({macd_status}) - {pattern_name} - DIF: {macd_value:.4f}\n"
+            dingtalk_content += "\n#### 🔴 价格行为空头信号：\n"
+            for symbol, macd_status, pattern_name, _, cross_interval, _ in sell_signal_1h:
+                dingtalk_content += f"- {symbol} ({macd_status}) - {cross_interval}{pattern_name}\n"
         
         if buy_signal_symbols or sell_signal_symbols:
             pass
