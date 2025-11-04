@@ -21,9 +21,14 @@ plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
 
 class CryptoAnalyzer:
     def __init__(self, dingtalk_webhook=None, telegram_bot_token=None, telegram_chat_id=None):
+        # 主要API URL
         self.binance_spot_url = 'https://api.binance.com/api/v3/klines'
         self.binance_futures_url = 'https://fapi.binance.com/fapi/v1/klines'  # 合约API
         self.binance_ticker_url = 'https://fapi.binance.com/fapi/v1/ticker/24hr'  # 合约行情数据
+        
+        # 备用API URL，用于解决451错误（地理位置限制）
+        self.binance_futures_url_backup = 'https://binance.fapi.com/fapi/v1/klines'
+        self.binance_ticker_url_backup = 'https://binance.fapi.com/fapi/v1/ticker/24hr'
         self.supported_intervals = {
             '15m': 15,  # 15分钟
             '1h': 60,   # 1小时
@@ -84,7 +89,7 @@ class CryptoAnalyzer:
         retry_kwargs = {
             'total': max_retries,
             'backoff_factor': 0.3,  # 减少重试间隔
-            'status_forcelist': [429, 500, 502, 503, 504]  # 指定需要重试的HTTP状态码
+            'status_forcelist': [429, 451, 500, 502, 503, 504]  # 添加451状态码到重试列表
         }
         
         # 尝试使用allowed_methods（新版本），如果失败则回退
@@ -101,12 +106,17 @@ class CryptoAnalyzer:
         session.mount('https://', adapter)
         session.mount('http://', adapter)
         # 添加请求头和超时优化
-        headers = {'Accept-Encoding': 'gzip, deflate'}
+        headers = {
+            'Accept-Encoding': 'gzip, deflate',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
         
         try:
             # 添加SSL验证设置和延长超时
+            # 优先使用主URL
+            current_url = self.binance_futures_url
             response = session.get(
-                self.binance_futures_url, 
+                current_url, 
                 params=params, 
                 timeout=15,
                 headers=headers,
@@ -166,8 +176,12 @@ class CryptoAnalyzer:
                 try:
                     print(f"正在重试... (尝试 {attempt+1}/{max_retries})")
                     time.sleep(1)
+                    # 首次重试时使用备用URL
+                    current_url = self.binance_futures_url_backup
+                    print(f"遇到错误，切换到备用URL: {current_url}")
+                    
                     response = session.get(
-                        self.binance_futures_url, 
+                        current_url, 
                         params=params, 
                         timeout=15,
                         headers=headers,
@@ -206,7 +220,7 @@ class CryptoAnalyzer:
         retry_kwargs = {
             'total': max_retries,
             'backoff_factor': 0.5,
-            'status_forcelist': [429, 500, 502, 503, 504]
+            'status_forcelist': [429, 451, 500, 502, 503, 504]  # 添加451状态码到重试列表
         }
         
         # 尝试使用allowed_methods（新版本），如果失败则回退
@@ -225,9 +239,18 @@ class CryptoAnalyzer:
         
         try:
             # 添加SSL验证设置和超时控制
+            # 添加请求头
+            headers = {
+                'Accept-Encoding': 'gzip, deflate',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            # 优先使用主URL
+            current_url = self.binance_ticker_url
             response = session.get(
-                self.binance_ticker_url, 
+                current_url, 
                 timeout=15,
+                headers=headers,
                 verify=False  # 禁用SSL验证以解决证书问题
             )
             response.raise_for_status()
@@ -252,25 +275,31 @@ class CryptoAnalyzer:
             print("获取合约币种数据时遇到SSL错误，已禁用SSL验证")
             # SSL错误时再次尝试
             try:
-                response = session.get(
-                    self.binance_ticker_url, 
-                    timeout=15,
-                    verify=False
-                )
-                response.raise_for_status()
-                tickers = response.json()
-                
-                usdt_pairs = []
-                for ticker in tickers:
-                    if ticker['symbol'].endswith('USDT') and 'quoteVolume' in ticker:
-                        try:
-                            quote_volume = float(ticker['quoteVolume'])
-                            usdt_pairs.append((ticker['symbol'], quote_volume))
-                        except ValueError:
-                            continue
-                
-                usdt_pairs.sort(key=lambda x: x[1], reverse=True)
-                return usdt_pairs[:top_n]
+                # 如果是451错误，切换到备用URL
+                        if '451' in str(inner_e):
+                            current_url = self.binance_ticker_url_backup
+                            print(f"遇到451错误，切换到备用URL: {current_url}")
+                        
+                        response = session.get(
+                            current_url, 
+                            timeout=15,
+                            headers=headers,
+                            verify=False
+                        )
+                        response.raise_for_status()
+                        tickers = response.json()
+                        
+                        usdt_pairs = []
+                        for ticker in tickers:
+                            if ticker['symbol'].endswith('USDT') and 'quoteVolume' in ticker:
+                                try:
+                                    quote_volume = float(ticker['quoteVolume'])
+                                    usdt_pairs.append((ticker['symbol'], quote_volume))
+                                except ValueError:
+                                    continue
+                        
+                        usdt_pairs.sort(key=lambda x: x[1], reverse=True)
+                        return usdt_pairs[:top_n]
                 
             except Exception as inner_e:
                 print(f"SSL错误重试后仍获取失败: {inner_e}")
@@ -283,9 +312,14 @@ class CryptoAnalyzer:
                 try:
                     print(f"正在重试... (尝试 {attempt+1}/{max_retries})")
                     time.sleep(2)
+                    # 首次重试时使用备用URL
+                    current_url = self.binance_ticker_url_backup
+                    print(f"遇到错误，切换到备用URL: {current_url}")
+                    
                     response = session.get(
-                        self.binance_ticker_url, 
+                        current_url, 
                         timeout=15,
+                        headers=headers,
                         verify=False
                     )
                     response.raise_for_status()
@@ -565,7 +599,7 @@ class CryptoAnalyzer:
             return 0.0
     
     def detect_pinbar(self, data, index):
-        """检测Pinbar形态"""
+        """检测Pinbar形态（更严格的条件）"""
         if index < 1:
             return False, None
             
@@ -576,45 +610,59 @@ class CryptoAnalyzer:
         body_size = abs(candle['close'] - candle['open'])
         high_low_range = candle['high'] - candle['low']
         
-        # 实体较小，影线较长
-        if body_size < high_low_range * 0.3:
+        # 实体必须很小，影线必须很长
+        if body_size < high_low_range * 0.25:  # 降低实体比例要求，使条件更严格
             upper_shadow = candle['high'] - max(candle['close'], candle['open'])
             lower_shadow = min(candle['close'], candle['open']) - candle['low']
             
             # 看涨Pinbar：下影线远长于上影线
-            if lower_shadow > upper_shadow * 2 and lower_shadow > body_size * 2:
+            if lower_shadow > upper_shadow * 3 and lower_shadow > body_size * 3:  # 提高倍数要求
                 return True, "bullish_pinbar"
-            # 看跌Pinbar：上影线远长于下影线
-            elif upper_shadow > lower_shadow * 2 and upper_shadow > body_size * 2:
+            # 看跌Pinbar：上影线远长于下影线（更严格）
+            elif upper_shadow > lower_shadow * 3 and upper_shadow > body_size * 3:  # 提高倍数要求
                 return True, "bearish_pinbar"
         
         return False, None
     
     def detect_engulfing(self, data, index):
-        """检测吞没形态（反包到上一根K线的一半以上）"""
+        """检测吞没形态（非常严格的条件）"""
         if index < 1:
             return False, None
             
         current = data.iloc[index]
         previous = data.iloc[index-1]
         
-        # 判断当前K线是否完全吞没前一根K线的一半以上
+        # 计算实体大小
         current_body = abs(current['close'] - current['open'])
         previous_body = abs(previous['close'] - previous['open'])
         
-        # 看涨吞没：当前阳线吞没前一根阴线的一半以上
-        if current['close'] > current['open'] and previous['close'] < previous['open']:
-            # 收盘价高于前一根K线实体的50%位置
-            prev_mid = (previous['open'] + previous['close']) / 2
-            if current['close'] > prev_mid and current_body > previous_body * 0.5:
-                return True, "bullish_engulfing"
+        # 只有实体足够大的K线才考虑
+        if current_body < previous_body * 0.8:  # 进一步提高要求：当前实体至少是前一根的80%
+            return False, None
         
-        # 看跌吞没：当前阴线吞没前一根阳线的一半以上
-        elif current['close'] < current['open'] and previous['close'] > previous['open']:
-            # 收盘价低于前一根K线实体的50%位置
+        # 看涨吞没：当前阳线吞没前一根阴线
+        if current['close'] > current['open'] and previous['close'] < previous['open']:
+            # 收盘价高于前一根K线实体的75%位置，且开盘价低于前一根的收盘价
             prev_mid = (previous['open'] + previous['close']) / 2
-            if current['close'] < prev_mid and current_body > previous_body * 0.5:
-                return True, "bearish_engulfing"
+            prev_75 = previous['open'] * 0.75 + previous['close'] * 0.25
+            if current['close'] > prev_75 and current['open'] < previous['close']:
+                # 添加额外验证：确保当前K线的高点高于前一根，低点低于前一根
+                if current['high'] > previous['high'] and current['low'] < previous['low']:
+                    print(f"检测到看涨吞没形态：当前实体={current_body:.4f}, 前实体={previous_body:.4f}")
+                    return True, "bullish_engulfing"
+        
+        # 看跌吞没：当前阴线吞没前一根阳线（特别严格的条件）
+        elif current['close'] < current['open'] and previous['close'] > previous['open']:
+            # 收盘价低于前一根K线实体的25%位置，且开盘价高于前一根的收盘价
+            prev_25 = previous['open'] * 0.25 + previous['close'] * 0.75
+            # 看跌吞没需要更严格的条件，避免误判
+            if current['close'] < prev_25 and current['open'] > previous['close']:
+                # 添加额外验证：确保当前K线的高点高于前一根，低点低于前一根
+                if current['high'] > previous['high'] and current['low'] < previous['low']:
+                    # 再增加一个条件：当前K线实体必须显著大于前一根
+                    if current_body > previous_body * 1.2:
+                        print(f"检测到看跌吞没形态：当前实体={current_body:.4f}, 前实体={previous_body:.4f}")
+                        return True, "bearish_engulfing"
         
         return False, None
     
@@ -669,75 +717,68 @@ class CryptoAnalyzer:
         return pattern_names.get(pattern_type, pattern_type)
     
     def detect_candle_patterns(self, data):
-        """检测所有蜡烛图形态（使用信号K和确认K机制，且判断极点是否为近期极值）"""
-        if len(data) < 10:  # 需要至少10根K线来判断近期极值
+        """检测所有蜡烛图形态（使用信号K和确认K机制）
+        
+        信号K定义：反包吞没、黄昏星、黎明星、Pinbar
+        确认K定义：阳线、阴线、十字星、Pinbar
+        规则：出现信号K后马上出现确认K，才触发信号
+        """
+        if len(data) < 10:  # 需要足够的K线数据
+            print(f"数据量不足，需要至少10根K线，当前只有{len(data)}根")
             return None
             
-        # 检查最后三根K线
         last_index = len(data) - 1
         
-        # 检查倒数第二根K线是否为信号K（信号K可以是pinbar或吞没形态）
+        # 主要检测场景：倒数第二根是信号K，最后一根是确认K
         signal_index = last_index - 1
-        if signal_index >= 1:  # 确保索引有效
-            # 检测信号K - Pinbar
-            is_signal_pinbar, signal_type = self.detect_pinbar(data, signal_index)
-            # 检测信号K - 吞没形态
-            is_signal_engulfing, engulfing_signal_type = self.detect_engulfing(data, signal_index)
-            
-            # 如果有信号K
-            if is_signal_pinbar or is_signal_engulfing:
-                # 分别处理不同类型的信号，确保都进行极值判断
-                if is_signal_pinbar:
-                    # Pinbar信号
-                    if self._is_recent_extreme(data, signal_index, signal_type):
-                        # 检查最后一根K线是否为确认K
-                        confirmation_index = last_index
-                        if self._is_confirmation_candle(data, confirmation_index, signal_type):
-                            return signal_type
-                
-                if is_signal_engulfing:
-                    # 吞没形态信号
-                    if self._is_recent_extreme(data, signal_index, engulfing_signal_type):
-                        # 检查最后一根K线是否为确认K
-                        confirmation_index = last_index
-                        if self._is_confirmation_candle(data, confirmation_index, engulfing_signal_type):
-                            return engulfing_signal_type
+        confirmation_index = last_index
         
-        # 检查倒数第三根K线是否为信号K（如果倒数第二根是确认K的话）
-        signal_index_prev = last_index - 2
-        if signal_index_prev >= 1:
-            # 检测信号K - Pinbar
-            is_signal_pinbar_prev, signal_type_prev = self.detect_pinbar(data, signal_index_prev)
-            # 检测信号K - 吞没形态
-            is_signal_engulfing_prev, engulfing_signal_type_prev = self.detect_engulfing(data, signal_index_prev)
+        if signal_index >= 2:  # 确保信号K有足够的前K线用于检测形态
+            # 检测信号K - 所有可能的信号形态
+            # 1. 检测Pinbar
+            is_pinbar, pinbar_type = self.detect_pinbar(data, signal_index)
+            # 2. 检测吞没形态
+            is_engulfing, engulfing_type = self.detect_engulfing(data, signal_index)
+            # 3. 检测星线形态（黎明星和黄昏星）
+            is_star, star_type = self.detect_morning_evening_star(data, signal_index)
             
-            # 如果有信号K
-            if is_signal_pinbar_prev or is_signal_engulfing_prev:
-                # 分别处理不同类型的信号，确保都进行极值判断
-                if is_signal_pinbar_prev:
-                    # Pinbar信号
-                    if self._is_recent_extreme(data, signal_index_prev, signal_type_prev):
-                        # 检查倒数第二根K线是否为确认K
-                        confirmation_index_prev = last_index - 1
-                        if self._is_confirmation_candle(data, confirmation_index_prev, signal_type_prev):
-                            return signal_type_prev
+            # 确定信号类型
+            signal_type = None
+            if is_pinbar:
+                signal_type = pinbar_type
+            elif is_engulfing:
+                signal_type = engulfing_type
+            elif is_star:
+                signal_type = star_type
+            
+            # 如果检测到信号K
+            if signal_type:
+                print(f"检测到信号K: {signal_type} 在索引 {signal_index}")
                 
-                if is_signal_engulfing_prev:
-                    # 吞没形态信号
-                    if self._is_recent_extreme(data, signal_index_prev, engulfing_signal_type_prev):
-                        # 检查倒数第二根K线是否为确认K
-                        confirmation_index_prev = last_index - 1
-                        if self._is_confirmation_candle(data, confirmation_index_prev, engulfing_signal_type_prev):
-                            return engulfing_signal_type_prev
+                # 对所有信号K类型进行极值检查（包括Pinbar、吞没形态、黎明星和黄昏星）
+                is_extreme = self._is_recent_extreme(data, signal_index, signal_type)
+                print(f"信号K极值检查 - 类型: {signal_type}, 是否极值: {is_extreme}")
+                if not is_extreme:
+                    print(f"信号K不是近期极值，忽略该信号")
+                    return None
+                
+                # 检查确认K
+                if confirmation_index < len(data):
+                    is_confirmation = self._is_confirmation_candle(data, confirmation_index, signal_type)
+                    print(f"确认K检查 - 索引: {confirmation_index}, 是否确认: {is_confirmation}")
+                    if is_confirmation:
+                        print(f"信号确认成功: {signal_type}")
+                        return signal_type
         
         # 没有检测到任何形态
+        print("未检测到符合要求的信号K+确认K组合")
         return None
     
     def _is_recent_extreme(self, data, signal_index, signal_type):
         """判断信号K的极点是否为近期极值点
         
-        对于看空信号（bearish_pinbar, bearish_engulfing）：判断信号K的高点是否为最近10根K线的最高点
-        对于看多信号（bullish_pinbar, bullish_engulfing）：判断信号K的低点是否为最近10根K线的最低点
+        对于看空信号（bearish_pinbar, bearish_engulfing, evening_star）：判断信号K的高点是否为最近10根K线的最高点
+        对于看多信号（bullish_pinbar, bullish_engulfing, morning_star）：判断信号K的低点是否为最近10根K线的最低点
         """
         # 计算起始索引（取信号K往前9根K线，总共10根）
         start_index = max(0, signal_index - 9)
@@ -749,21 +790,32 @@ class CryptoAnalyzer:
         signal_candle = data.iloc[signal_index]
         
         # 根据信号类型判断是否为近期极值
-        if signal_type in ['bearish_pinbar', 'bearish_engulfing']:
+        if signal_type in ['bearish_pinbar', 'bearish_engulfing', 'evening_star']:
             # 看空信号：判断高点是否为最近10根K线的最高点
             signal_high = signal_candle['high']
             recent_highs = recent_data['high']
             is_highest = signal_high == recent_highs.max()
+            # 增加日志
+            if is_highest:
+                print(f"极值检查 - 看空信号[{signal_type}] 信号K高点({signal_high:.4f})是最近10根K线的最高点")
+            else:
+                print(f"极值检查失败 - 看空信号[{signal_type}] 信号K高点({signal_high:.4f})不是最近10根K线的最高点，最高值为({recent_highs.max():.4f})")
             return is_highest
         
-        elif signal_type in ['bullish_pinbar', 'bullish_engulfing']:
+        elif signal_type in ['bullish_pinbar', 'bullish_engulfing', 'morning_star']:
             # 看多信号：判断低点是否为最近10根K线的最低点
             signal_low = signal_candle['low']
             recent_lows = recent_data['low']
             is_lowest = signal_low == recent_lows.min()
+            # 增加日志
+            if is_lowest:
+                print(f"极值检查 - 看多信号[{signal_type}] 信号K低点({signal_low:.4f})是最近10根K线的最低点")
+            else:
+                print(f"极值检查失败 - 看多信号[{signal_type}] 信号K低点({signal_low:.4f})不是最近10根K线的最低点，最低值为({recent_lows.min():.4f})")
             return is_lowest
         
         # 其他情况返回False
+        print(f"极值检查 - 未知信号类型[{signal_type}]，返回False")
         return False
     
     def _is_confirmation_candle(self, data, index, signal_type):
@@ -813,30 +865,36 @@ class CryptoAnalyzer:
         
         return is_same_direction
     
-    def analyze_single_currency(self, symbol):
+    def analyze_single_currency(self, symbol, rank=21):
         """分析单个币种，返回分析结果"""
         try:
-            print(f"开始分析币种: {symbol}")
+            print(f"开始分析币种: {symbol} (排名: {rank})")
             
-            # 大周期是4h，小周期为15m
+            # 大周期是4h，小周期根据排名选择：前20用1h，后20用15m
             four_hour_interval = '4h'  # 大周期
-            fifteen_min_interval = '15m'   # 小周期
+            # 根据排名选择小周期：市值前20用1h，后面的用15m
+            if rank <= 20:
+                small_interval = '1h'
+                print(f"{symbol} 排名前20，使用1小时周期分析")
+            else:
+                small_interval = '15m'
+                print(f"{symbol} 排名20以后，使用15分钟周期分析")
             
             # 获取4小时周期数据（大周期）
             print(f"正在获取{symbol}的4小时K线数据...")
             four_hour_data = self.get_futures_klines(symbol, four_hour_interval, limit=50)
-            # 获取15分钟周期数据（小周期）
-            print(f"正在获取{symbol}的15分钟K线数据...")
-            fifteen_min_data = self.get_futures_klines(symbol, fifteen_min_interval, limit=100)
+            # 获取小周期数据（根据排名选择的周期）
+            print(f"正在获取{symbol}的{small_interval}K线数据...")
+            small_data = self.get_futures_klines(symbol, small_interval, limit=100)
             
-            if four_hour_data is None or fifteen_min_data is None:
+            if four_hour_data is None or small_data is None:
                 print(f"无法获取{symbol}的完整数据，跳过")
-                return symbol, None, False, None, None, None, False, False, fifteen_min_interval
+                return symbol, None, False, None, None, None, False, False, small_interval
             
             # 降低数据量要求
-            if len(four_hour_data) < 20 or len(fifteen_min_data) < 20:
+            if len(four_hour_data) < 20 or len(small_data) < 20:
                 print(f"{symbol}数据量不足，跳过")
-                return symbol, None, False, None, None, None, False, False, fifteen_min_interval
+                return symbol, None, False, None, None, None, False, False, small_interval
             
             # 计算大周期4小时MACD - 只需要dif值
             four_hour_macd_line, _, _ = self.calculate_macd(four_hour_data)
@@ -849,39 +907,52 @@ class CryptoAnalyzer:
             # 添加详细日志
             print(f"{symbol} 4小时MACD(DIF)值: {four_hour_macd_value:.6f}, 状态: {macd_status}")
             
-            # 检测小周期15分钟的裸K信号
-            candle_pattern = self.detect_candle_patterns(fifteen_min_data)
-            print(f"{symbol} 15分钟K线形态: {candle_pattern}")
+            # 检测小周期的裸K信号（根据排名选择的周期）
+            candle_pattern = self.detect_candle_patterns(small_data)
+            print(f"{symbol} {small_interval}K线形态: {candle_pattern}")
             
-            # 简化信号检查逻辑
+            # 增加额外的价格信息日志，帮助调试
+            if len(small_data) >= 3:
+                last_candle = small_data.iloc[-1]
+                prev_candle = small_data.iloc[-2]
+                print(f"{symbol} 最近两根{small_interval}K线:\n  倒数第二根: 开={prev_candle['open']:.4f}, 收={prev_candle['close']:.4f}, 高={prev_candle['high']:.4f}, 低={prev_candle['low']:.4f}\n  最后一根: 开={last_candle['open']:.4f}, 收={last_candle['close']:.4f}, 高={last_candle['high']:.4f}, 低={last_candle['low']:.4f}")
+            
+            # 基于小周期信号和大周期方向生成交易信号
             is_buy_signal = False
             is_sell_signal = False
             pattern_type = None
             
-            # 买入信号：大周期多头 + 小周期多头裸K信号
-            if four_hour_macd_bullish:
-                if candle_pattern in ['bullish_pinbar', 'bullish_engulfing', 'morning_star']:
-                    print(f"{symbol} 检测到买入信号：大周期多头，小周期出现{self.get_pattern_name(candle_pattern)}")
-                    is_buy_signal = True
-                    pattern_type = candle_pattern
-            
-            # 卖出信号：大周期空头 + 小周期空头裸K信号
+            # 买入信号：小周期多头裸K信号 + 大周期多头
+            if candle_pattern in ['bullish_pinbar', 'bullish_engulfing', 'morning_star'] and four_hour_macd_bullish:
+                print(f"{symbol} 检测到买入信号：小周期出现{self.get_pattern_name(candle_pattern)} + 大周期多头")
+                is_buy_signal = True
+                pattern_type = candle_pattern
+            # 卖出信号：小周期空头裸K信号 + 大周期空头
+            elif candle_pattern in ['bearish_pinbar', 'bearish_engulfing', 'evening_star'] and not four_hour_macd_bullish:
+                print(f"{symbol} 检测到卖出信号：小周期出现{self.get_pattern_name(candle_pattern)} + 大周期空头")
+                is_sell_signal = True
+                pattern_type = candle_pattern
+            # 小周期有信号但大周期方向不匹配
+            elif candle_pattern in ['bullish_pinbar', 'bullish_engulfing', 'morning_star'] and not four_hour_macd_bullish:
+                print(f"{symbol} 小周期出现{self.get_pattern_name(candle_pattern)}，但大周期不是多头，不生成买入信号")
+            elif candle_pattern in ['bearish_pinbar', 'bearish_engulfing', 'evening_star'] and four_hour_macd_bullish:
+                print(f"{symbol} 小周期出现{self.get_pattern_name(candle_pattern)}，但大周期不是空头，不生成卖出信号")
             else:
-                if candle_pattern in ['bearish_pinbar', 'bearish_engulfing', 'evening_star']:
-                    print(f"{symbol} 检测到卖出信号：大周期空头，小周期出现{self.get_pattern_name(candle_pattern)}")
-                    is_sell_signal = True
-                    pattern_type = candle_pattern
+                print(f"{symbol} 未检测到明确的小周期形态信号")
             
-            # 添加信号检查结果日志
-            print(f"{symbol} 信号检查结果 - 买入信号: {is_buy_signal}, 卖出信号: {is_sell_signal}")
+            # 输出大周期信息
+            print(f"{symbol} 大周期4小时MACD状态: {macd_status} (DIF={four_hour_macd_value:.6f})")
+            
+            # 添加详细的信号检查结果日志
+            print(f"{symbol} 信号检查结果 - 买入信号: {is_buy_signal}, 卖出信号: {is_sell_signal}, 最终形态类型: {pattern_type}")
             
             # 分析完成，返回结果（保持原返回格式以兼容其他代码）
-            return symbol, macd_status, is_buy_signal, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, fifteen_min_interval
+            return symbol, macd_status, is_buy_signal, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, small_interval
         except Exception as e:
             print(f"分析{symbol}时出错: {e}")
             import traceback
             traceback.print_exc()
-            return symbol, None, False, None, None, None, False, False, fifteen_min_interval
+            return symbol, None, False, None, None, None, False, False, small_interval
             
     def get_pattern_name(self, pattern_type):
         """获取K线形态的中文名称"""
@@ -895,9 +966,9 @@ class CryptoAnalyzer:
         }
         return pattern_names.get(pattern_type, pattern_type)
     
-    def check_4h_bullish_1h_goldencross(self, symbol):
+    def check_4h_bullish_1h_goldencross(self, symbol, rank=21):
         """检查特定信号：大周期MACD状态和小周期裸K形态"""
-        symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish = self.analyze_single_currency(symbol)
+        symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish = self.analyze_single_currency(symbol, rank)
         return macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish
     
     def plot_chart(self, symbol, main_interval, main_data, four_x_data, analysis_result):
@@ -1640,8 +1711,8 @@ class CryptoAnalyzer:
         
         # 使用线程池处理
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # 提交所有任务
-            future_to_symbol = {executor.submit(self.analyze_single_currency, symbol): symbol for symbol, _ in top_currencies}
+            # 提交所有任务，传递排名信息（i+1作为排名）
+            future_to_symbol = {executor.submit(self.analyze_single_currency, symbol, i+1): symbol for i, (symbol, _) in enumerate(top_currencies)}
             
             # 处理完成的任务
             for i, future in enumerate(as_completed(future_to_symbol), 1):
@@ -1669,15 +1740,15 @@ class CryptoAnalyzer:
                         # 判断信号类型
                         signal = "不满足"
                         
-                        # 使用analyze_single_currency中计算好的信号
+                        # 使用analyze_single_currency中计算好的信号（小周期信号+大周期方向匹配）
                         if is_buy_signal:
                             pattern_name = self.get_pattern_name(pattern_type) if hasattr(self, 'get_pattern_name') else pattern_type
-                            signal = f"买入信号：大周期多头+1h{pattern_name}"
+                            signal = f"买入信号：大周期多头+{cross_interval}{pattern_name}"
                             buy_signal_count += 1
                             buy_signal_symbols.append((symbol, macd_status, pattern_name, four_hour_macd_value, pattern_type))
                         elif is_sell_signal:
                             pattern_name = self.get_pattern_name(pattern_type) if hasattr(self, 'get_pattern_name') else pattern_type
-                            signal = f"卖出信号：大周期空头+1h{pattern_name}"
+                            signal = f"卖出信号：大周期空头+{cross_interval}{pattern_name}"
                             sell_signal_count += 1
                             sell_signal_symbols.append((symbol, macd_status, pattern_name, four_hour_macd_value, pattern_type))
                         
@@ -1747,27 +1818,27 @@ class CryptoAnalyzer:
         # 生成钉钉通知内容
         dingtalk_content = f"### 加密货币信号提醒 - {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
         
-        # 输出1小时裸K信号的买入信号
+        # 输出裸K信号的买入信号（根据市值排名使用不同周期）
         if buy_signal_1h:
             print("\n⚠️  满足条件的买入信号币种：")
-            print("\n1小时裸K买入信号：")
+            print("\n裸K买入信号：")
             for symbol, status, pattern_name, _, _, _ in buy_signal_1h:
                 print(f"   • {symbol} ({status}) - {pattern_name}")
             
             # 添加到钉钉通知
-            dingtalk_content += "#### 🟢 1小时裸K多头信号：\n"
+            dingtalk_content += "#### 🟢 裸K多头信号：\n"
             for symbol, macd_status, pattern_name, macd_value, _, _ in buy_signal_1h:
                 dingtalk_content += f"- {symbol} ({macd_status}) - {pattern_name} - DIF: {macd_value:.4f}\n"
         
-        # 输出1小时裸K信号的卖出信号
+        # 输出裸K信号的卖出信号（根据市值排名使用不同周期）
         if sell_signal_1h:
             print("\n⚠️  满足条件的卖出信号币种：")
-            print("\n1小时裸K卖出信号：")
+            print("\n裸K卖出信号：")
             for symbol, status, pattern_name, _, _, _ in sell_signal_1h:
                 print(f"   • {symbol} ({status}) - {pattern_name}")
             
             # 添加到钉钉通知
-            dingtalk_content += "\n#### 🔴 1小时裸K空头信号：\n"
+            dingtalk_content += "\n#### 🔴 裸K空头信号：\n"
             for symbol, macd_status, pattern_name, macd_value, _, _ in sell_signal_1h:
                 dingtalk_content += f"- {symbol} ({macd_status}) - {pattern_name} - DIF: {macd_value:.4f}\n"
         
