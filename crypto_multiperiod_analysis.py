@@ -26,8 +26,15 @@ class CryptoAnalyzer:
         self.last_check_prices = {}
         self.active_mad_pushes = set()
     
-    def get_futures_klines(self, symbol, interval, limit=50):
-        """获取期货K线数据并转换为DataFrame"""
+    def get_futures_klines(self, symbol, interval, limit=50, use_completed_candle=True):
+        """获取期货K线数据并转换为DataFrame
+        
+        Args:
+            symbol: 交易对
+            interval: K线周期
+            limit: 获取的K线数量
+            use_completed_candle: 是否只使用已完成的整点K线
+        """
         # 创建会话并配置重试机制
         session = requests.Session()
         
@@ -71,6 +78,15 @@ class CryptoAnalyzer:
                     df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
                     df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
                     df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
+                    
+                    # 如果需要使用已完成的整点K线
+                    if use_completed_candle:
+                        # 过滤掉可能正在形成的K线（最新的K线）
+                        # 只保留已经完全结束的K线（倒数第二条及之前的）
+                        if len(df) > 1:
+                            df = df.iloc[:-1].copy()
+                            print(f"⚠️ 使用已完成的整点K线，过滤掉最新的不完整K线")
+                    
                     return df
                 else:
                     print(f"获取{symbol}的{interval}数据为空")
@@ -172,25 +188,65 @@ class CryptoAnalyzer:
             pattern_type = "无形态"
             
             # 优化形态检测逻辑，优先检测最可靠的形态
+            pattern_type = "无形态"
+            
+            # 计算价格位置用于日志输出
+            if len(one_hour_df) >= 10:
+                recent_high = one_hour_df['high'].tail(10).max()
+                recent_low = one_hour_df['low'].tail(10).min()
+                recent_range = recent_high - recent_low
+                latest = one_hour_df.iloc[-1]
+                price_position = (latest['close'] - recent_low) / recent_range if recent_range > 0 else 0
+                position_category = "底部区域" if price_position < 0.45 else "中部区域" if price_position < 0.55 else "顶部区域"
+            else:
+                price_position = 0.5
+                position_category = "未知区域"
+            
             # 1. 先检测Pinbar（最常见的可靠形态）
             if self.detect_pinbar(one_hour_df, strict=False):
                 if float(one_hour_df['close'].iloc[-1]) > float(one_hour_df['open'].iloc[-1]):
                     pattern_type = "看涨Pinbar"
                 else:
                     pattern_type = "看跌Pinbar"
+                print(f"   - K线形态: {pattern_type} (价格位置: {price_position:.2f} - {position_category})")
             # 2. 再检测吞没形态
             elif self.detect_engulfing(one_hour_df, strict=False):
                 if float(one_hour_df['close'].iloc[-1]) > float(one_hour_df['open'].iloc[-1]):
                     pattern_type = "看涨吞没"
                 else:
                     pattern_type = "看跌吞没"
+                print(f"   - K线形态: {pattern_type}")
             # 3. 最后检测星形态
             elif self.detect_morning_evening_star(one_hour_df):
                 if float(one_hour_df['close'].iloc[-1]) > float(one_hour_df['open'].iloc[-1]):
                     pattern_type = "黎明星"
                 else:
                     pattern_type = "黄昏星"
-            print(f"   - K线形态: {pattern_type}")
+                print(f"   - K线形态: {pattern_type}")
+            else:
+                # 记录未检测到形态的原因（如果是Pinbar形态但位置不合适）
+                if len(one_hour_df) >= 10:
+                    latest = one_hour_df.iloc[-1]
+                    body = abs(latest['close'] - latest['open'])
+                    total_range = latest['high'] - latest['low']
+                    if total_range > 0 and body / total_range < 0.5:  # 可能是Pinbar形态
+                        is_bullish = latest['close'] > latest['open']
+                        if is_bullish:
+                            lower_shadow = latest['open'] - latest['low']
+                            if body > 0 and lower_shadow > body * 1.5:
+                                print(f"   - K线形态: 无形态 (检测到Pinbar形态但不在底部区域，价格位置: {price_position:.2f} - {position_category})")
+                            else:
+                                print(f"   - K线形态: {pattern_type}")
+                        else:
+                            upper_shadow = latest['high'] - latest['open']
+                            if body > 0 and upper_shadow > body * 1.5:
+                                print(f"   - K线形态: 无形态 (检测到Pinbar形态但不在顶部区域，价格位置: {price_position:.2f} - {position_category})")
+                            else:
+                                print(f"   - K线形态: {pattern_type}")
+                    else:
+                        print(f"   - K线形态: {pattern_type}")
+                else:
+                    print(f"   - K线形态: {pattern_type}")
             
             # 6. 增强的信号生成逻辑 - 包含极值处理
             is_buy_signal = False
@@ -309,8 +365,14 @@ class CryptoAnalyzer:
         return macd, signal, hist
     
     def detect_pinbar(self, data, strict=True):
-        """检测Pinbar形态，strict=False时放宽条件"""
-        if len(data) < 1:
+        """检测Pinbar形态，strict=False时放宽条件
+        
+        新增位置判断逻辑：
+        - 看涨Pinbar必须出现在价格底部区域
+        - 看跌Pinbar必须出现在价格顶部区域
+        """
+        # 至少需要10根K线来判断价格位置
+        if len(data) < 10:
             return False
             
         latest = data.iloc[-1]
@@ -323,29 +385,54 @@ class CryptoAnalyzer:
         if total_range == 0:
             return False
         
-        # Pinbar条件：实体小，影线长
+        # 计算价格位置 - 使用最近10根K线的高低点范围
+        recent_high = data['high'].tail(10).max()
+        recent_low = data['low'].tail(10).min()
+        recent_range = recent_high - recent_low
+        
+        # 避免除零错误
+        if recent_range == 0:
+            return False
+        
+        # 计算当前K线收盘价在最近10根K线中的相对位置（0-1）
+        # 0表示最低，1表示最高
+        price_position = (latest['close'] - recent_low) / recent_range
+        
+        # Pinbar条件：实体小，影线长，且位于合适的价格位置
         if strict:
             # 严格条件：实体小于总范围的1/3，影线大于实体的2倍
             body_ratio = body / total_range
             if latest['close'] > latest['open']:  # 看涨Pinbar
                 upper_shadow = latest['high'] - latest['close']
                 lower_shadow = latest['open'] - latest['low']
-                return body_ratio < 0.33 and upper_shadow < lower_shadow * 0.5 and lower_shadow > body * 2
+                # 看涨Pinbar必须出现在底部区域（价格位置低于0.4）
+                is_bottom = price_position < 0.4
+                pinbar_pattern = body_ratio < 0.33 and upper_shadow < lower_shadow * 0.5 and lower_shadow > body * 2
+                return pinbar_pattern and is_bottom
             else:  # 看跌Pinbar
                 upper_shadow = latest['high'] - latest['open']
                 lower_shadow = latest['close'] - latest['low']
-                return body_ratio < 0.33 and lower_shadow < upper_shadow * 0.5 and upper_shadow > body * 2
+                # 看跌Pinbar必须出现在顶部区域（价格位置高于0.6）
+                is_top = price_position > 0.6
+                pinbar_pattern = body_ratio < 0.33 and lower_shadow < upper_shadow * 0.5 and upper_shadow > body * 2
+                return pinbar_pattern and is_top
         else:
-            # 宽松条件：实体小于总范围的1/2，影线大于实体的1倍
+            # 宽松条件：实体小于总范围的1/2，影线大于实体的1.5倍
             body_ratio = body / total_range
             if latest['close'] > latest['open']:  # 看涨Pinbar
                 upper_shadow = latest['high'] - latest['close']
                 lower_shadow = latest['open'] - latest['low']
-                return body_ratio < 0.5 and lower_shadow > body * 1
+                # 看涨Pinbar必须出现在底部区域（价格位置低于0.45）
+                is_bottom = price_position < 0.45
+                pinbar_pattern = body_ratio < 0.5 and lower_shadow > body * 1.5
+                return pinbar_pattern and is_bottom
             else:  # 看跌Pinbar
                 upper_shadow = latest['high'] - latest['open']
                 lower_shadow = latest['close'] - latest['low']
-                return body_ratio < 0.5 and upper_shadow > body * 1
+                # 看跌Pinbar必须出现在顶部区域（价格位置高于0.55）
+                is_top = price_position > 0.55
+                pinbar_pattern = body_ratio < 0.5 and upper_shadow > body * 1.5
+                return pinbar_pattern and is_top
     
     def detect_engulfing(self, data, strict=True):
         """检测吞没形态，strict=False时放宽条件"""
