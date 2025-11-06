@@ -253,37 +253,40 @@ class CryptoAnalyzer:
             is_sell_signal = False
             signal_reason = ""
             
-            # 基础信号条件：大周期方向与小周期形态匹配
-            if four_hour_macd_bullish:
-                if pattern_type in ["看涨Pinbar", "看涨吞没", "黎明星"]:
-                    # 极端市场条件下增加确认要求
-                    if is_extreme_market:
-                        # 检查MACD背离或更多确认
-                        macd_strength = abs(four_hour_macd_value)
-                        if macd_strength > 0.0005:  # MACD强度确认
+            # 基础信号条件：大周期方向与小周期形态匹配 - 仅在有形态时生成信号
+            if pattern_type != "无形态":
+                if four_hour_macd_bullish:
+                    if pattern_type in ["看涨Pinbar", "看涨吞没", "黎明星"]:
+                        # 极端市场条件下增加确认要求
+                        if is_extreme_market:
+                            # 检查MACD背离或更多确认
+                            macd_strength = abs(four_hour_macd_value)
+                            if macd_strength > 0.0005:  # MACD强度确认
+                                is_buy_signal = True
+                                signal_reason = f"大周期多头 + {pattern_type} (极端市场确认)"
+                                print(f"⚠️ {symbol}在极端市场条件下确认买入信号")
+                        else:
                             is_buy_signal = True
-                            signal_reason = f"大周期多头 + {pattern_type} (极端市场确认)"
-                            print(f"⚠️ {symbol}在极端市场条件下确认买入信号")
-                    else:
-                        is_buy_signal = True
-                        signal_reason = f"大周期多头 + {pattern_type}"
-            else:
-                if pattern_type in ["看跌Pinbar", "看跌吞没", "黄昏星"]:
-                    # 极端市场条件下增加确认要求
-                    if is_extreme_market:
-                        # 检查MACD背离或更多确认
-                        macd_strength = abs(four_hour_macd_value)
-                        if macd_strength > 0.0005:  # MACD强度确认
+                            signal_reason = f"大周期多头 + {pattern_type}"
+                else:
+                    if pattern_type in ["看跌Pinbar", "看跌吞没", "黄昏星"]:
+                        # 极端市场条件下增加确认要求
+                        if is_extreme_market:
+                            # 检查MACD背离或更多确认
+                            macd_strength = abs(four_hour_macd_value)
+                            if macd_strength > 0.0005:  # MACD强度确认
+                                is_sell_signal = True
+                                signal_reason = f"大周期空头 + {pattern_type} (极端市场确认)"
+                                print(f"⚠️ {symbol}在极端市场条件下确认卖出信号")
+                        else:
                             is_sell_signal = True
-                            signal_reason = f"大周期空头 + {pattern_type} (极端市场确认)"
-                            print(f"⚠️ {symbol}在极端市场条件下确认卖出信号")
-                    else:
-                        is_sell_signal = True
-                        signal_reason = f"大周期空头 + {pattern_type}"
+                            signal_reason = f"大周期空头 + {pattern_type}"
+            else:
+                print(f"   - 无交易信号: {symbol} 当前为无形态，不生成任何交易信号")
             
-            # 额外的信号强化条件
+            # 额外的信号强化条件 - 仅在有形态时生成信号
             # 大周期多头 + 小周期MACD金叉：强化买入信号
-            if is_golden_cross and four_hour_macd_bullish:
+            if is_golden_cross and four_hour_macd_bullish and pattern_type != "无形态":
                 # 极端市场条件下增加MACD强度要求
                 if is_extreme_market:
                     if abs(four_hour_macd_value) > 0.0003:
@@ -294,9 +297,11 @@ class CryptoAnalyzer:
                     is_buy_signal = True
                     signal_reason = "大周期多头 + 小周期MACD金叉"
                     print(f"✨ {symbol}触发MACD金叉买入信号")
+            elif is_golden_cross and four_hour_macd_bullish and pattern_type == "无形态":
+                print(f"🚫 {symbol}无形态，即使MACD金叉也不生成买入信号")
             
             # 大周期空头 + 小周期MACD死叉：强化卖出信号
-            if is_death_cross and not four_hour_macd_bullish:
+            if is_death_cross and not four_hour_macd_bullish and pattern_type != "无形态":
                 # 极端市场条件下增加MACD强度要求
                 if is_extreme_market:
                     if abs(four_hour_macd_value) > 0.0003:
@@ -307,6 +312,8 @@ class CryptoAnalyzer:
                     is_sell_signal = True
                     signal_reason = "大周期空头 + 小周期MACD死叉"
                     print(f"✨ {symbol}触发MACD死叉卖出信号")
+            elif is_death_cross and not four_hour_macd_bullish and pattern_type == "无形态":
+                print(f"🚫 {symbol}无形态，即使MACD死叉也不生成卖出信号")
             
             # 极值过滤：防止在过大波动后立即交易
             last_candle_change = float(one_hour_df['price_change_pct'].iloc[-1])
@@ -365,14 +372,20 @@ class CryptoAnalyzer:
         return macd, signal, hist
     
     def detect_pinbar(self, data, strict=True):
-        """检测Pinbar形态，strict=False时放宽条件
+        """
+        检测Pinbar形态，strict=False时放宽条件
         
         新增位置判断逻辑：
         - 看涨Pinbar必须出现在价格底部区域
         - 看跌Pinbar必须出现在价格顶部区域
+        
+        新增形态要求：
+        - 看涨Pinbar：上影线不能超过实体长度，且最低价为最近10根K线最低
+        - 看跌Pinbar：下影线不能超过实体长度，且最高价为最近10根K线最高
         """
-        # 至少需要10根K线来判断价格位置
+        # 至少需要10根K线来判断价格位置和检查极值
         if len(data) < 10:
+            print(f"Pinbar检测失败: 数据不足，需要至少10根K线")
             return False
             
         latest = data.iloc[-1]
@@ -383,6 +396,7 @@ class CryptoAnalyzer:
         
         # 避免除零错误
         if total_range == 0:
+            print(f"Pinbar检测失败: K线无波动")
             return False
         
         # 计算价格位置 - 使用最近10根K线的高低点范围
@@ -392,51 +406,107 @@ class CryptoAnalyzer:
         
         # 避免除零错误
         if recent_range == 0:
+            print(f"Pinbar检测失败: 最近10根K线无波动")
             return False
         
         # 计算当前K线收盘价在最近10根K线中的相对位置（0-1）
         # 0表示最低，1表示最高
         price_position = (latest['close'] - recent_low) / recent_range
         
-        # Pinbar条件：实体小，影线长，且位于合适的价格位置
+        # 计算最近10根K线的高低点
+        recent_10_high = data['high'].tail(10).max()
+        recent_10_low = data['low'].tail(10).min()
+        
+        # 添加调试信息
+        print(f"\n=== Pinbar检测调试信息 ===")
+        print(f"K线数据: 开盘={latest['open']}, 收盘={latest['close']}, 最高={latest['high']}, 最低={latest['low']}")
+        print(f"实体长度: {body}, 总范围: {total_range}")
+        print(f"价格位置: {price_position:.2f}")
+        print(f"最近10根K线最高价: {recent_10_high}, 最近10根K线最低价: {recent_10_low}")
+        
+        # 根据严格/宽松模式设置参数
         if strict:
-            # 严格条件：实体小于总范围的1/3，影线大于实体的2倍
-            body_ratio = body / total_range
-            if latest['close'] > latest['open']:  # 看涨Pinbar
-                upper_shadow = latest['high'] - latest['close']
-                lower_shadow = latest['open'] - latest['low']
-                # 看涨Pinbar必须出现在底部区域（价格位置低于0.4）
-                is_bottom = price_position < 0.4
-                pinbar_pattern = body_ratio < 0.33 and upper_shadow < lower_shadow * 0.5 and lower_shadow > body * 2
-                return pinbar_pattern and is_bottom
-            else:  # 看跌Pinbar
-                upper_shadow = latest['high'] - latest['open']
-                lower_shadow = latest['close'] - latest['low']
-                # 看跌Pinbar必须出现在顶部区域（价格位置高于0.6）
-                is_top = price_position > 0.6
-                pinbar_pattern = body_ratio < 0.33 and lower_shadow < upper_shadow * 0.5 and upper_shadow > body * 2
-                return pinbar_pattern and is_top
+            body_ratio_threshold = 0.33
+            shadow_ratio_threshold = 2.0
+            bottom_threshold = 0.4
+            top_threshold = 0.6
+            print(f"严格模式: 实体比例阈值={body_ratio_threshold}, 影线比例阈值={shadow_ratio_threshold}")
         else:
-            # 宽松条件：实体小于总范围的1/2，影线大于实体的1.5倍
-            body_ratio = body / total_range
-            if latest['close'] > latest['open']:  # 看涨Pinbar
-                upper_shadow = latest['high'] - latest['close']
-                lower_shadow = latest['open'] - latest['low']
-                # 看涨Pinbar必须出现在底部区域（价格位置低于0.45）
-                is_bottom = price_position < 0.45
-                pinbar_pattern = body_ratio < 0.5 and lower_shadow > body * 1.5
-                return pinbar_pattern and is_bottom
-            else:  # 看跌Pinbar
-                upper_shadow = latest['high'] - latest['open']
-                lower_shadow = latest['close'] - latest['low']
-                # 看跌Pinbar必须出现在顶部区域（价格位置高于0.55）
-                is_top = price_position > 0.55
-                pinbar_pattern = body_ratio < 0.5 and upper_shadow > body * 1.5
-                return pinbar_pattern and is_top
+            body_ratio_threshold = 0.5
+            shadow_ratio_threshold = 1.5
+            bottom_threshold = 0.45
+            top_threshold = 0.55
+            print(f"宽松模式: 实体比例阈值={body_ratio_threshold}, 影线比例阈值={shadow_ratio_threshold}")
+        
+        # 计算实体比例
+        body_ratio = body / total_range
+        print(f"实体比例={body_ratio:.2f}, 需要 < {body_ratio_threshold}")
+        
+        # 判断是否为看涨Pinbar
+        is_bullish = latest['close'] > latest['open']
+        
+        if is_bullish:
+            # 看涨Pinbar计算
+            upper_shadow = latest['high'] - latest['close']
+            lower_shadow = latest['open'] - latest['low']
+            
+            print(f"看涨Pinbar检查:")
+            print(f"上影线: {upper_shadow}, 下影线: {lower_shadow}")
+            
+            # 价格位置条件
+            is_bottom = price_position < bottom_threshold
+            print(f"是否在底部区域: {is_bottom}, 价格位置需 < {bottom_threshold}")
+            
+            # 新条件1：上影线不能超过实体长度
+            upper_shadow_condition = upper_shadow <= body
+            print(f"上影线 <= 实体长度: {upper_shadow_condition}, 上影线={upper_shadow}, 实体={body}")
+            
+            # 新条件2：最低价格需要是最近10根K线的最低价（考虑浮点数精度问题）
+            is_recent_lowest = latest['low'] <= recent_10_low * 1.0001  # 允许微小误差
+            print(f"最低价是否为最近10根最低: {is_recent_lowest}, 当前最低={latest['low']}, 参考最低={recent_10_low}")
+            
+            # 看涨Pinbar的形态条件：小实体，长下影线
+            pinbar_pattern = body_ratio < body_ratio_threshold and lower_shadow > body * shadow_ratio_threshold
+            print(f"形态条件满足: {pinbar_pattern}")
+            
+            # 综合判断
+            result = pinbar_pattern and is_bottom and upper_shadow_condition and is_recent_lowest
+            print(f"最终看涨Pinbar检测结果: {result}")
+        else:
+            # 看跌Pinbar计算
+            upper_shadow = latest['high'] - latest['open']
+            lower_shadow = latest['close'] - latest['low']
+            
+            print(f"看跌Pinbar检查:")
+            print(f"上影线: {upper_shadow}, 下影线: {lower_shadow}")
+            
+            # 价格位置条件
+            is_top = price_position > top_threshold
+            print(f"是否在顶部区域: {is_top}, 价格位置需 > {top_threshold}")
+            
+            # 新条件1：下影线不能超过实体长度
+            lower_shadow_condition = lower_shadow <= body
+            print(f"下影线 <= 实体长度: {lower_shadow_condition}, 下影线={lower_shadow}, 实体={body}")
+            
+            # 新条件2：最高价格需要是最近10根K线的最高价（考虑浮点数精度问题）
+            is_recent_highest = latest['high'] >= recent_10_high * 0.9999  # 允许微小误差
+            print(f"最高价是否为最近10根最高: {is_recent_highest}, 当前最高={latest['high']}, 参考最高={recent_10_high}")
+            
+            # 看跌Pinbar的形态条件：小实体，长上影线
+            pinbar_pattern = body_ratio < body_ratio_threshold and upper_shadow > body * shadow_ratio_threshold
+            print(f"形态条件满足: {pinbar_pattern}")
+            
+            # 综合判断
+            result = pinbar_pattern and is_top and lower_shadow_condition and is_recent_highest
+            print(f"最终看跌Pinbar检测结果: {result}")
+        
+        return result
     
     def detect_engulfing(self, data, strict=True):
         """检测吞没形态，strict=False时放宽条件"""
-        if len(data) < 2:
+        # 至少需要10根K线来检查极值
+        if len(data) < 10:
+            print(f"吞没形态检测失败: 数据不足，需要至少10根K线")
             return False
             
         current = data.iloc[-1]
@@ -450,44 +520,95 @@ class CryptoAnalyzer:
             current_body = abs(current['close'] - current['open'])
             previous_body = abs(previous['close'] - previous['open'])
             
+            # 计算最近10根K线的高低点
+            recent_10_high = data['high'].tail(10).max()
+            recent_10_low = data['low'].tail(10).min()
+            
+            # 添加调试信息
+            print(f"\n=== 吞没形态检测调试信息 ===")
+            print(f"当前K线: 开盘={current['open']}, 收盘={current['close']}, 最高={current['high']}, 最低={current['low']}")
+            print(f"前一根K线: 开盘={previous['open']}, 收盘={previous['close']}, 最高={previous['high']}, 最低={previous['low']}")
+            print(f"实体长度: 当前={current_body}, 前一根={previous_body}")
+            print(f"最近10根K线最高价: {recent_10_high}, 最近10根K线最低价: {recent_10_low}")
+            
+            # 基本形态条件
+            basic_condition = False
             if strict:
                 # 严格条件：当前K线完全吞没前一根K线
                 if current['close'] > current['open']:  # 看涨吞没
-                    return (current['open'] < previous['close'] and 
-                            current['close'] > previous['open'] and 
-                            current_body > previous_body * 1.2)
+                    basic_condition = (current['open'] < previous['close'] and 
+                                      current['close'] > previous['open'] and 
+                                      current_body > previous_body * 1.2)
                 else:  # 看跌吞没
-                    return (current['open'] > previous['close'] and 
-                            current['close'] < previous['open'] and 
-                            current_body > previous_body * 1.2)
+                    basic_condition = (current['open'] > previous['close'] and 
+                                      current['close'] < previous['open'] and 
+                                      current_body > previous_body * 1.2)
             else:
                 # 宽松条件：当前K线实体大于前一根K线实体
-                return current_body > previous_body * 0.8
+                basic_condition = current_body > previous_body * 0.8
+            
+            # 添加价格位置条件
+            if current['close'] > current['open']:  # 看涨吞没
+                # 看涨吞没的最低价必须是最近10根K的最低价格（考虑浮点数精度）
+                price_condition = current['low'] <= recent_10_low * 1.0001
+                print(f"看涨吞没价格条件: 当前最低价 <= 最近10根K线最低价: {price_condition}")
+                return basic_condition and price_condition
+            else:  # 看跌吞没
+                # 看跌吞没的最高价必须是最近10根K的最高价格（考虑浮点数精度）
+                price_condition = current['high'] >= recent_10_high * 0.9999  # 允许微小误差
+                print(f"看跌吞没价格条件: 当前最高价 >= 最近10根K线最高价: {price_condition}")
+                return basic_condition and price_condition
         
         return False
     
     def detect_morning_evening_star(self, data):
         """检测晨星/昏星形态"""
-        if len(data) < 3:
+        # 至少需要10根K线来检查极值
+        if len(data) < 10:
+            print(f"星形态检测失败: 数据不足，需要至少10根K线")
             return False
             
         first = data.iloc[-3]
         second = data.iloc[-2]
         third = data.iloc[-1]
         
+        # 计算最近10根K线的高低点
+        recent_10_high = data['high'].tail(10).max()
+        recent_10_low = data['low'].tail(10).min()
+        
+        # 计算组合K线的高低点
+        pattern_low = min(first['low'], second['low'], third['low'])
+        pattern_high = max(first['high'], second['high'], third['high'])
+        
+        # 添加调试信息
+        print(f"\n=== 星形态检测调试信息 ===")
+        print(f"第一根K线: 开盘={first['open']}, 收盘={first['close']}, 最高={first['high']}, 最低={first['low']}")
+        print(f"第二根K线: 开盘={second['open']}, 收盘={second['close']}, 最高={second['high']}, 最低={second['low']}")
+        print(f"第三根K线: 开盘={third['open']}, 收盘={third['close']}, 最高={third['high']}, 最低={third['low']}")
+        print(f"组合K线最低点: {pattern_low}, 组合K线最高点: {pattern_high}")
+        print(f"最近10根K线最高价: {recent_10_high}, 最近10根K线最低价: {recent_10_low}")
+        
         # 晨星条件
         if (first['close'] < first['open'] and  # 第一根是阴线
             abs(second['close'] - second['open']) < abs(first['close'] - first['open']) * 0.5 and  # 第二根是小实体
             third['close'] > third['open'] and  # 第三根是阳线
             third['close'] > (first['open'] + first['close']) / 2):  # 第三根收盘价超过第一根中点
-            return True
+            
+            # 黎明星组合K里的最低价格必须是最近10根k的最低价（考虑浮点数精度）
+            price_condition = pattern_low <= recent_10_low * 1.0001
+            print(f"黎明星价格条件: 组合K线最低点 <= 最近10根K线最低价: {price_condition}")
+            return price_condition
         
         # 昏星条件
         elif (first['close'] > first['open'] and  # 第一根是阳线
               abs(second['close'] - second['open']) < abs(first['close'] - first['open']) * 0.5 and  # 第二根是小实体
               third['close'] < third['open'] and  # 第三根是阴线
               third['close'] < (first['open'] + first['close']) / 2):  # 第三根收盘价低于第一根中点
-            return True
+            
+            # 黄昏星组合K里的最高价格必须是最近10根k的最高价（考虑浮点数精度）
+            price_condition = pattern_high >= recent_10_high * 0.9999  # 允许微小误差
+            print(f"黄昏星价格条件: 组合K线最高点 >= 最近10根K线最高价: {price_condition}")
+            return price_condition
         
         return False
     
