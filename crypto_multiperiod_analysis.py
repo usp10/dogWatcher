@@ -1021,15 +1021,10 @@ class CryptoAnalyzer:
             # 更新历史盈亏率
             self.previous_total_pnl = total_pnl_rate
         
-        # 如果有警报，发送通知
+        # 如果有警报，只保留日志记录
         if has_alerts:
-            try:
-                # 只发送到电报
-                print("准备发送持仓盈亏提醒到电报")
-                self.send_telegram_notification(alert_content, "持仓盈亏提醒")
-                print("持仓盈亏提醒已发送到电报")
-            except Exception as e:
-                print(f"发送持仓盈亏提醒失败: {e}")
+            print("检测到持仓盈亏警报")
+            print(f"警报内容: {alert_content}")
         else:
             print("本次检查未发现需要提醒的情况")
         
@@ -1198,112 +1193,7 @@ class CryptoAnalyzer:
         
         print(f"✅ {symbol}的5分钟异动疯狂推送结束，共推送{push_count}条消息")
     
-    def test_mad_push(self, symbol="BTCUSDT", growth_rate=3.5):
-        """测试5分钟异动疯狂推送功能
-        
-        Args:
-            symbol: 测试的币种，默认为BTCUSDT
-            growth_rate: 测试的涨幅，默认为3.5%
-        """
-        print(f"📝 开始测试{symbol}的5分钟异动疯狂推送功能")
-        
-        # 获取当前价格
-        current_price = self.get_crypto_price(symbol)
-        if current_price is None:
-            current_price = 40000.0  # 默认价格
-            print(f"无法获取{symbol}的当前价格，使用默认价格: {current_price}")
-        
-        # 模拟持仓信息
-        position_type = "long"  # 模拟做多
-        
-        # 启动测试推送（为了测试方便，只推送3次，每次间隔2秒）
-        print(f"模拟{symbol} 5分钟上涨{growth_rate}%")
-        
-        # 使用较短的推送时间进行测试
-        original_mad_push = self.mad_push_to_dingtalk
-        
-        def test_push_wrapper(*args, **kwargs):
-            # 临时替换推送逻辑，只推送3次
-            print("🔔 启动测试模式的5分钟异动推送")
-            start_time = time.time()
-            symbol = args[0]
-            current_price = args[1]
-            five_min_growth = args[2]
-            position_type = args[3]
-            direction = "上涨" if five_min_growth > 0 else "下跌"
-            profit_direction = "盈利" if (position_type == 'long' and five_min_growth > 0) or (position_type == 'short' and five_min_growth < 0) else "亏损"
-            push_count = 0
-            
-            # 获取持仓信息，用于计算盈亏率
-            holdings = self.load_holdings()
-            entry_price = None
-            if symbol in holdings:
-                entry_price = holdings[symbol].get('entry_price')
-            
-            # 只推送3次，每次间隔2秒
-            while push_count < 3 and time.time() - start_time < 10:
-                try:
-                    # 计算盈亏率
-                    pnl_rate_text = "-"
-                    if entry_price is not None:
-                        if position_type == 'long':
-                            pnl_rate = ((current_price - entry_price) / entry_price) * 100
-                        else:  # short
-                            pnl_rate = ((entry_price - current_price) / entry_price) * 100
-                        pnl_rate_text = f"{pnl_rate:.2f}%"
-                        # 添加颜色标记
-                        if pnl_rate > 0:
-                            pnl_rate_text += " 🟢"
-                        elif pnl_rate < 0:
-                            pnl_rate_text += " 🔴"
-                        else:
-                            pnl_rate_text += " ⚪"
-                    
-                    # 构建推送消息，确保包含关键词"提醒"和"价格"
-                    push_content = f"""
-### ⚠️⚠️⚠️ 提醒 - 测试价格异动 ⚠️⚠️⚠️
 
-#### 提醒: {symbol} 5分钟内{direction}超过3%
-
-- **当前价格**: {current_price:.4f}
-- **价格5分钟涨幅**: {five_min_growth:.2f}%
-- **持仓方向**: {position_type}
-- **盈亏状态**: {profit_direction}
-- **当前盈亏率**: {pnl_rate_text}
-- **推送次数**: {push_count + 1}
-- **时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-🔔 提醒: 这是测试消息，价格波动较大，请及时关注！
-                    """
-                    
-                    # 发送钉钉通知，标题也包含关键词
-                    success = self.send_dingtalk_notification(push_content, title=f"提醒: [测试] {symbol} 价格异动")
-                    print(f"测试推送 #{push_count + 1}: {'成功' if success else '失败'}")
-                    push_count += 1
-                    
-                    # 等待2秒后再次推送
-                    time.sleep(2)
-                    
-                except Exception as e:
-                    print(f"测试推送过程中出错: {e}")
-                    time.sleep(2)
-            
-            print(f"✅ 测试推送结束，共推送{push_count}条消息")
-        
-        # 临时替换方法
-        self.mad_push_to_dingtalk = test_push_wrapper
-        
-        try:
-            # 启动测试推送线程
-            test_thread = threading.Thread(target=self.mad_push_to_dingtalk,
-                                        args=(symbol, current_price, growth_rate, position_type),
-                                        daemon=True)
-            test_thread.start()
-            test_thread.join(10)  # 等待测试完成
-            print("📝 5分钟异动疯狂推送功能测试完成")
-        finally:
-            # 恢复原始方法
-            self.mad_push_to_dingtalk = original_mad_push
             
     def check_holdings_signals(self, analysis_results):
         """根据持仓情况检查止盈止损信号"""
@@ -1624,12 +1514,12 @@ class CryptoAnalyzer:
                 self.send_dingtalk_notification(dingtalk_content, "加密货币交易信号提醒")
             except Exception as e:
                 print(f"钉钉通知发送失败: {e}")
-            # 发送Telegram通知
-            try:
-                # 同时发送到电报群
-                self.send_telegram_notification(dingtalk_content, "加密货币交易信号提醒")
-            except Exception as e:
-                print(f"电报通知发送失败: {e}")
+            # 发送Telegram通知 - 已屏蔽
+            # try:
+            #     # 同时发送到电报群
+            #     self.send_telegram_notification(dingtalk_content, "加密货币交易信号提醒")
+            # except Exception as e:
+            #     print(f"电报通知发送失败: {e}")
         else:
             print("没有交易信号，不发送通知")
         
@@ -1827,69 +1717,7 @@ def send_urgent_notification(symbol="BTCUSDT", message="紧急提醒"):
         # 确保恢复原始方法
         analyzer.mad_push_to_dingtalk = original_mad_push
 
-def test_signal_generation():
-    """测试信号生成逻辑的函数"""
-    print("\n===== 开始测试信号生成逻辑 =====")
-    print("当前策略：大周期4小时MACD(DIF>0多头/DIF<0空头) + 小周期1小时裸K信号")
-    
-    # 配置参数
-    DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=02fcc926215099c4d0315e453e86aa6d9af934ad538de89b13f67bc3d131ee07"
-    TELEGRAM_BOT_TOKEN = "7708753284:AAEYV4WRHfJQR4tCb5uQ8ye-T29IEf6X9qE"
-    TELEGRAM_CHAT_ID = "-4611171283"
-    
-    analyzer = CryptoAnalyzer(
-        dingtalk_webhook=DINGTALK_WEBHOOK,
-        telegram_bot_token=TELEGRAM_BOT_TOKEN,
-        telegram_chat_id=TELEGRAM_CHAT_ID
-    )
-    
-    # 先测试获取K线数据
-    print("\n测试获取K线数据...")
-    btc_data = analyzer.get_futures_klines('BTCUSDT', '4h', limit=50)
-    print(f"BTCUSDT 4小时K线数据获取结果: {'成功' if btc_data is not None else '失败'}")
-    if btc_data is not None:
-        print(f"数据形状: {btc_data.shape}")
-        print(f"数据前5行:\n{btc_data.head()}")
-    
-    # 只测试BTCUSDT以简化输出
-    test_symbols = ['BTCUSDT']
-    
-    for symbol in test_symbols:
-        print(f"\n正在测试 {symbol} 的信号生成...")
-        result = analyzer.analyze_single_currency(symbol)
-        print(f"分析函数返回结果类型: {type(result)}")
-        
-        if result is not None:
-            print(f"返回值数量: {len(result)}")
-            # 确保返回值足够多
-            if len(result) >= 9:
-                symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, interval = result
-                
-                print(f"\n{symbol} 完整分析结果:")
-                print(f"大周期状态: {macd_status} (MACD DIF值: {four_hour_macd_value:.6f})")
-                print(f"大周期是否多头: {four_hour_macd_bullish}")
-                print(f"小周期是否金叉: {is_golden_cross}")
-                print(f"小周期K线形态: {pattern_type}")
-                print(f"小周期分析周期: {interval}")
-                print(f"买入信号: {is_buy_signal}")
-                print(f"卖出信号: {is_sell_signal}")
-                
-                # 添加策略逻辑说明
-                if is_buy_signal:
-                    print(f"✅ {symbol} 生成了买入信号！")
-                    print(f"信号触发原因: 大周期{macd_status} + 小周期出现{pattern_type}")
-                elif is_sell_signal:
-                    print(f"⚠️ {symbol} 生成了卖出信号！")
-                    print(f"信号触发原因: 大周期{macd_status} + 小周期出现{pattern_type}")
-                else:
-                    print(f"❌ {symbol} 未生成交易信号")
-                    print("未触发信号原因: 未满足大周期方向与小周期裸K信号的匹配条件")
-            else:
-                print(f"返回值数量不足，只有 {len(result)} 个值")
-        else:
-            print(f"分析函数返回None")
-    
-    print("\n===== 信号生成测试完成 =====\n")
+
 
 if __name__ == "__main__":
     import sys
@@ -1899,35 +1727,10 @@ if __name__ == "__main__":
     TELEGRAM_BOT_TOKEN = "7708753284:AAEYV4WRHfJQR4tCb5uQ8ye-T29IEf6X9qE"  # 请在此处填入您的电报机器人token
     TELEGRAM_CHAT_ID = "-4611171283"  # 请在此处填入您的电报群chat_id
     
-    # 检查命令行参数
-    if len(sys.argv) > 1:
-        if sys.argv[1] == "--test-mad-push":
-            # 运行测试
-            print("\n=== 5分钟异动疯狂推送功能测试 ===\n")
-            symbol = sys.argv[2] if len(sys.argv) > 2 else "BTCUSDT"
-            growth_rate = float(sys.argv[3]) if len(sys.argv) > 3 else 3.5
-            analyzer = CryptoAnalyzer(
-                dingtalk_webhook=DINGTALK_WEBHOOK,
-                telegram_bot_token=TELEGRAM_BOT_TOKEN,
-                telegram_chat_id=TELEGRAM_CHAT_ID
-            )
-            analyzer.test_mad_push(symbol=symbol, growth_rate=growth_rate)
-            print("\n=== 测试完成 ===")
-        elif sys.argv[1] == "--urgent-push":
-            # 发送紧急推送
-            print("\n=== 发送紧急推送 ===\n")
-            symbol = sys.argv[2] if len(sys.argv) > 2 else "BTCUSDT"
-            message = " ".join(sys.argv[3:]) if len(sys.argv) > 3 else "紧急提醒"
-            send_urgent_notification(symbol, message)
-            print("\n=== 推送完成 ===")
-        elif sys.argv[1] == "--test-signals":
-            # 测试信号生成逻辑
-            test_signal_generation()
-    else:
-        # 正常运行
-        analyzer = CryptoAnalyzer(
-            dingtalk_webhook=DINGTALK_WEBHOOK,
-            telegram_bot_token=TELEGRAM_BOT_TOKEN,
-            telegram_chat_id=TELEGRAM_CHAT_ID
-        )
-        analyzer.run()
+    # 正常运行
+    analyzer = CryptoAnalyzer(
+        dingtalk_webhook=DINGTALK_WEBHOOK,
+        telegram_bot_token=None,
+        telegram_chat_id=None
+    )
+    analyzer.run()
