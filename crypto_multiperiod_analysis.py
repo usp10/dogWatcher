@@ -253,67 +253,81 @@ class CryptoAnalyzer:
             is_sell_signal = False
             signal_reason = ""
             
-            # 基础信号条件：大周期方向与小周期形态匹配 - 仅在有形态时生成信号
+            # 基础信号条件：小周期形态触发信号，同时考虑大周期MACD方向
             if pattern_type != "无形态":
-                if four_hour_macd_bullish:
-                    if pattern_type in ["看涨Pinbar", "看涨吞没", "黎明星"]:
+                # 计算大周期MACD的DIF和DEA
+                four_hour_dif = four_hour_macd_value
+                four_hour_dea = self.calculate_macd(four_hour_df, 12, 26, 9)[1].iloc[-1]
+                
+                if pattern_type in ["看涨Pinbar", "看涨吞没", "黎明星"]:
+                    # 大周期MACD过滤：当大周期DIF < 0且DIF < DEA时，不触发多头信号
+                    if four_hour_dif < 0 and four_hour_dif < four_hour_dea:
+                        print(f"🚫 {symbol}大周期MACD空头且下行趋势，过滤多头信号")
+                    else:
                         # 极端市场条件下增加确认要求
                         if is_extreme_market:
-                            # 检查MACD背离或更多确认
+                            # 检查MACD强度确认
                             macd_strength = abs(four_hour_macd_value)
-                            if macd_strength > 0.0005:  # MACD强度确认
+                            if macd_strength > 0.0003:  # 降低阈值，更宽松
                                 is_buy_signal = True
-                                signal_reason = f"大周期多头 + {pattern_type} (极端市场确认)"
+                                signal_reason = f"{pattern_type} (极端市场确认)"
                                 print(f"⚠️ {symbol}在极端市场条件下确认买入信号")
                         else:
                             is_buy_signal = True
-                            signal_reason = f"大周期多头 + {pattern_type}"
-                else:
-                    if pattern_type in ["看跌Pinbar", "看跌吞没", "黄昏星"]:
+                            signal_reason = f"{pattern_type}"
+                elif pattern_type in ["看跌Pinbar", "看跌吞没", "黄昏星"]:
+                    # 大周期MACD过滤：当大周期DIF > 0且DIF > DEA时，不触发空头信号
+                    if four_hour_dif > 0 and four_hour_dif > four_hour_dea:
+                        print(f"🚫 {symbol}大周期MACD多头且上行趋势，过滤空头信号")
+                    else:
                         # 极端市场条件下增加确认要求
                         if is_extreme_market:
-                            # 检查MACD背离或更多确认
+                            # 检查MACD强度确认
                             macd_strength = abs(four_hour_macd_value)
-                            if macd_strength > 0.0005:  # MACD强度确认
+                            if macd_strength > 0.0003:  # 降低阈值，更宽松
                                 is_sell_signal = True
-                                signal_reason = f"大周期空头 + {pattern_type} (极端市场确认)"
+                                signal_reason = f"{pattern_type} (极端市场确认)"
                                 print(f"⚠️ {symbol}在极端市场条件下确认卖出信号")
                         else:
                             is_sell_signal = True
-                            signal_reason = f"大周期空头 + {pattern_type}"
+                        signal_reason = f"{pattern_type}"
             else:
                 print(f"   - 无交易信号: {symbol} 当前为无形态，不生成任何交易信号")
             
             # 额外的信号强化条件 - 仅在有形态时生成信号
-            # 大周期多头 + 小周期MACD金叉：强化买入信号
-            if is_golden_cross and four_hour_macd_bullish and pattern_type != "无形态":
-                # 极端市场条件下增加MACD强度要求
-                if is_extreme_market:
-                    if abs(four_hour_macd_value) > 0.0003:
+            # 小周期MACD金叉：强化买入信号
+            if is_golden_cross and pattern_type != "无形态":
+                # 大周期MACD过滤：当大周期DIF < 0且DIF < DEA时，不触发多头信号
+                if four_hour_dif < 0 and four_hour_dif < four_hour_dea:
+                    print(f"🚫 {symbol}大周期MACD空头且下行趋势，过滤MACD金叉多头信号")
+                else:
+                    # 极端市场条件下增加MACD强度要求
+                    if is_extreme_market:
+                        if abs(four_hour_macd_value) > 0.0003:
+                            is_buy_signal = True
+                            signal_reason = "小周期MACD金叉 (极端市场强化)"
+                            print(f"✨ {symbol}在极端市场条件下触发强化MACD金叉买入信号")
+                    else:
                         is_buy_signal = True
-                        signal_reason = "大周期多头 + 小周期MACD金叉 (极端市场强化)"
-                        print(f"✨ {symbol}在极端市场条件下触发强化MACD金叉买入信号")
-                else:
-                    is_buy_signal = True
-                    signal_reason = "大周期多头 + 小周期MACD金叉"
-                    print(f"✨ {symbol}触发MACD金叉买入信号")
-            elif is_golden_cross and four_hour_macd_bullish and pattern_type == "无形态":
-                print(f"🚫 {symbol}无形态，即使MACD金叉也不生成买入信号")
+                        signal_reason = "小周期MACD金叉"
+                        print(f"✨ {symbol}触发MACD金叉买入信号")
             
-            # 大周期空头 + 小周期MACD死叉：强化卖出信号
-            if is_death_cross and not four_hour_macd_bullish and pattern_type != "无形态":
-                # 极端市场条件下增加MACD强度要求
-                if is_extreme_market:
-                    if abs(four_hour_macd_value) > 0.0003:
-                        is_sell_signal = True
-                        signal_reason = "大周期空头 + 小周期MACD死叉 (极端市场强化)"
-                        print(f"✨ {symbol}在极端市场条件下触发强化MACD死叉卖出信号")
+            # 小周期MACD死叉：强化卖出信号
+            if is_death_cross and pattern_type != "无形态":
+                # 大周期MACD过滤：当大周期DIF > 0且DIF > DEA时，不触发空头信号
+                if four_hour_dif > 0 and four_hour_dif > four_hour_dea:
+                    print(f"🚫 {symbol}大周期MACD多头且上行趋势，过滤MACD死叉空头信号")
                 else:
-                    is_sell_signal = True
-                    signal_reason = "大周期空头 + 小周期MACD死叉"
+                    # 极端市场条件下增加MACD强度要求
+                    if is_extreme_market:
+                        if abs(four_hour_macd_value) > 0.0003:
+                            is_sell_signal = True
+                            signal_reason = "小周期MACD死叉 (极端市场强化)"
+                            print(f"✨ {symbol}在极端市场条件下触发强化MACD死叉卖出信号")
+                    else:
+                        is_sell_signal = True
+                    signal_reason = "小周期MACD死叉"
                     print(f"✨ {symbol}触发MACD死叉卖出信号")
-            elif is_death_cross and not four_hour_macd_bullish and pattern_type == "无形态":
-                print(f"🚫 {symbol}无形态，即使MACD死叉也不生成卖出信号")
             
             # 极值过滤：防止在过大波动后立即交易
             last_candle_change = float(one_hour_df['price_change_pct'].iloc[-1])
@@ -544,8 +558,8 @@ class CryptoAnalyzer:
                                       current['close'] < previous['open'] and 
                                       current_body > previous_body * 1.2)
             else:
-                # 宽松条件：当前K线实体大于前一根K线实体
-                basic_condition = current_body > previous_body * 0.8
+                # 宽松条件：当前K线实体大于前一根K线实体的2/3
+                basic_condition = current_body > previous_body * 0.667
             
             # 添加价格位置条件
             if current['close'] > current['open']:  # 看涨吞没
@@ -555,9 +569,14 @@ class CryptoAnalyzer:
                 return basic_condition and price_condition
             else:  # 看跌吞没
                 # 看跌吞没的最高价必须是最近10根K的最高价格（考虑浮点数精度）
-                price_condition = current['high'] >= recent_10_high * 0.9999  # 允许微小误差
+                price_condition = current['high'] >= recent_10_high * 0.9999
                 print(f"看跌吞没价格条件: 当前最高价 >= 最近10根K线最高价: {price_condition}")
-                return basic_condition and price_condition
+                
+                # 修正看跌吞没的收盘价条件：当前收盘低于前K线中点价格
+                mid_price_condition = current['close'] < (previous['open'] + previous['close']) / 2
+                print(f"看跌吞没收盘价条件: 当前收盘 < 前K线中点价格: {mid_price_condition}")
+                
+                return basic_condition and price_condition and mid_price_condition
         
         return False
     
@@ -1719,18 +1738,67 @@ def send_urgent_notification(symbol="BTCUSDT", message="紧急提醒"):
 
 
 
-if __name__ == "__main__":
-    import sys
+def check_btc_signal():
+    """专门检查BTC的最新信号"""
+    print("==== 正在查询BTCUSDT的最新信号 ====")
     
     # 配置参数
     DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=02fcc926215099c4d0315e453e86aa6d9af934ad538de89b13f67bc3d131ee07"  # 请在此处填入您的钉钉webhook地址
-    TELEGRAM_BOT_TOKEN = "7708753284:AAEYV4WRHfJQR4tCb5uQ8ye-T29IEf6X9qE"  # 请在此处填入您的电报机器人token
-    TELEGRAM_CHAT_ID = "-4611171283"  # 请在此处填入您的电报群chat_id
     
-    # 正常运行
+    # 创建分析器实例
     analyzer = CryptoAnalyzer(
         dingtalk_webhook=DINGTALK_WEBHOOK,
         telegram_bot_token=None,
         telegram_chat_id=None
     )
-    analyzer.run()
+    
+    # 直接分析BTCUSDT
+    symbol = "BTCUSDT"
+    print(f"🔍 开始分析 {symbol}...")
+    
+    try:
+        # 调用分析单个币种的方法
+        result = analyzer.analyze_single_currency(symbol, 1)
+        
+        if result:
+            symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval = result
+            
+            print(f"\n📊 {symbol} 信号分析结果:")
+            print(f"   - 大周期状态: {macd_status} (DIF: {four_hour_macd_value:.6f})")
+            print(f"   - 小周期形态: {pattern_type}")
+            print(f"   - 买入信号: {'✅ 是' if is_buy_signal else '❌ 否'}")
+            print(f"   - 卖出信号: {'✅ 是' if is_sell_signal else '❌ 否'}")
+            
+            if is_buy_signal:
+                pattern_name = analyzer.get_pattern_name(pattern_type) if hasattr(analyzer, 'get_pattern_name') else pattern_type
+                print(f"\n📈 BTCUSDT当前信号: 买入信号 - 大周期多头 + {cross_interval}{pattern_name}")
+            elif is_sell_signal:
+                pattern_name = analyzer.get_pattern_name(pattern_type) if hasattr(analyzer, 'get_pattern_name') else pattern_type
+                print(f"\n📉 BTCUSDT当前信号: 卖出信号 - 大周期空头 + {cross_interval}{pattern_name}")
+            else:
+                print("\n⚠️ BTCUSDT当前无交易信号")
+        else:
+            print("❌ 无法获取BTCUSDT的分析结果")
+    
+    except Exception as e:
+        print(f"❌ 分析BTCUSDT时出错: {str(e)}")
+    
+    print("==== 查询结束 ====")
+
+if __name__ == "__main__":
+    import sys
+    
+    # 检查是否有特殊参数
+    if len(sys.argv) > 1 and sys.argv[1] == "--check-btc":
+        # 仅检查BTC信号
+        check_btc_signal()
+    else:
+        # 正常运行
+        DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=02fcc926215099c4d0315e453e86aa6d9af934ad538de89b13f67bc3d131ee07"  # 请在此处填入您的钉钉webhook地址
+        
+        analyzer = CryptoAnalyzer(
+            dingtalk_webhook=DINGTALK_WEBHOOK,
+            telegram_bot_token=None,
+            telegram_chat_id=None
+        )
+        analyzer.run()
