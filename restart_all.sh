@@ -12,16 +12,26 @@ for pid in $TELEGRAM_PIDS; do
   fi
 done
 
-# 查找并杀死crypto_multiperiod_analysis.py进程（使用更宽松的匹配模式）
-echo "\n正在查找并终止多周期分析脚本进程..."
+# 查找并杀死交易所相关的分析脚本进程
+echo "\n正在查找并终止交易所分析脚本进程..."
 
-# 方法1: 精确匹配
-ANALYSIS_PIDS=$(ps aux | grep "python crypto_multiperiod_analysis.py" | grep -v grep | awk '{print $2}')
-for pid in $ANALYSIS_PIDS; do
-  echo "方法1 - 杀死精确匹配进程: $pid"
+# 方法1: 精确匹配币安脚本
+BINANCE_PIDS=$(ps aux | grep "python crypto_multiperiod_analysis.py" | grep -v grep | awk '{print $2}')
+for pid in $BINANCE_PIDS; do
+  echo "方法1 - 杀死币安分析脚本进程: $pid"
   kill -9 $pid 2>/dev/null
   if [ $? -eq 0 ]; then
-    echo "精确匹配进程已成功终止"
+    echo "币安分析脚本进程已成功终止"
+  fi
+done
+
+# 方法1.1: 精确匹配OKX脚本
+OKX_PIDS=$(ps aux | grep "python crypto_multiperiod_analysis_okx.py" | grep -v grep | awk '{print $2}')
+for pid in $OKX_PIDS; do
+  echo "方法1.1 - 杀死OKX分析脚本进程: $pid"
+  kill -9 $pid 2>/dev/null
+  if [ $? -eq 0 ]; then
+    echo "OKX分析脚本进程已成功终止"
   fi
 done
 
@@ -97,10 +107,16 @@ echo "Telegram机器人已重新启动，PID: $TELEGRAM_PID，日志文件: logs
 # 等待3秒让telegram机器人先启动
 sleep 3
 
-# 启动crypto_multiperiod_analysis.py，并将日志输出到文件
-nohup python crypto_multiperiod_analysis.py > logs/analysis.log 2>&1 &
-ANALYSIS_PID=$!
+# 启动币安分析脚本，并将日志输出到文件
+nohup python crypto_multiperiod_analysis.py > logs/binance_analysis.log 2>&1 &
+BINANCE_PID=$!
 
-echo "多周期分析脚本已重新启动，PID: $ANALYSIS_PID"
+echo "币安分析脚本已重新启动，PID: $BINANCE_PID"
 
-echo "\n所有操作已完成！两个脚本已重新启动。"
+# 启动OKX分析脚本，并将日志输出到文件
+nohup python crypto_multiperiod_analysis_okx.py > logs/okx_analysis.log 2>&1 &
+OKX_PID=$!
+
+echo "OKX分析脚本已重新启动，PID: $OKX_PID"
+
+echo "\n所有操作已完成！三个脚本已重新启动。"

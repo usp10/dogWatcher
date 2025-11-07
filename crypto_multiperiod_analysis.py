@@ -1195,7 +1195,7 @@ class CryptoAnalyzer:
                 """
                 
                 # 发送钉钉通知，标题也包含关键词
-                self.send_dingtalk_notification(push_content, title=f"提醒: {symbol} 加密货币")
+                self.send_dingtalk_notification(push_content, title=f"价格行为分析 - 币安 {symbol} 加密货币")
                 push_count += 1
                 
                 # 等待3秒后再次推送
@@ -1713,7 +1713,7 @@ def send_urgent_notification(symbol="BTCUSDT", message="紧急提醒"):
             """
             
             # 发送钉钉通知
-            success = analyzer.send_dingtalk_notification(push_content, title=f"提醒: {symbol} 加密货币")
+            success = analyzer.send_dingtalk_notification(push_content, title=f"价格行为分析 - 币安 {symbol} 加密货币")
             
             if success:
                 print(f"✅ {symbol}的紧急推送发送成功")
