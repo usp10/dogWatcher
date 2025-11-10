@@ -168,9 +168,11 @@ class CryptoAnalyzerOKX:
             session.close()
     
     def analyze_single_currency(self, symbol, rank=21):
-        """分析单个币种的MACD信号和K线形态 - 增强版"""
+        """分析单个币种的MACD信号和K线形态 - 增强版，包含确认K线功能"""
         try:
             print(f"🔍 开始分析 {symbol} (排名: {rank})...")
+            # 初始化确认K线类型变量
+            confirmation_candle_type = "无"
             
             # 1. 获取并验证K线数据
             print(f"   - 获取4小时K线数据...")
@@ -189,10 +191,12 @@ class CryptoAnalyzerOKX:
             if len(one_hour_df) < 30:
                 print(f"⚠️ 警告: {symbol} 1小时K线数据不足 (仅{len(one_hour_df)}条)，建议>=30条")
             
+            # 计算1小时价格变化百分比用于后续信号过滤
+            one_hour_df['price_change_pct'] = one_hour_df['close'].pct_change() * 100
+            
             # 2. 信号极值处理：检测异常价格波动
             print(f"   - 检查异常价格波动...")
             # 计算1小时波动率
-            one_hour_df['price_change_pct'] = one_hour_df['close'].pct_change() * 100
             recent_volatility = one_hour_df['price_change_pct'].tail(5).abs().mean()
             max_volatility = one_hour_df['price_change_pct'].abs().max()
             
@@ -235,77 +239,224 @@ class CryptoAnalyzerOKX:
             # 5. 检测K线形态（优化检测顺序和条件）
             print(f"   - 检测K线形态...")
             pattern_type = "无形态"
+            confirmation_candle_type = "无"  # 初始化确认K线类型
             
-            # 优化形态检测逻辑，优先检测最可靠的形态
-            pattern_type = "无形态"
+            # 首先检测倒数第二根K线（作为潜在信号K线）的形态
+            # 创建一个新的DataFrame，只包含到倒数第二根K线的数据
+            potential_signal_df = one_hour_df.iloc[:-1].copy()
+            potential_pattern_type = "无形态"
             
             # 计算价格位置用于日志输出
-            if len(one_hour_df) >= 10:
-                recent_high = one_hour_df['high'].tail(10).max()
-                recent_low = one_hour_df['low'].tail(10).min()
+            if len(potential_signal_df) >= 10:
+                recent_high = potential_signal_df['high'].tail(10).max()
+                recent_low = potential_signal_df['low'].tail(10).min()
                 recent_range = recent_high - recent_low
-                latest = one_hour_df.iloc[-1]
+                latest = potential_signal_df.iloc[-1]
                 price_position = (latest['close'] - recent_low) / recent_range if recent_range > 0 else 0
                 position_category = "底部区域" if price_position < 0.45 else "中部区域" if price_position < 0.55 else "顶部区域"
             else:
                 price_position = 0.5
                 position_category = "未知区域"
             
-            # 1. 先检测Pinbar（最常见的可靠形态）
-            if self.detect_pinbar(one_hour_df, strict=True):
-                # 严格检查价格位置：看涨Pinbar需要在底部区域，看跌Pinbar需要在顶部区域
-                if float(one_hour_df['close'].iloc[-1]) > float(one_hour_df['open'].iloc[-1]) and price_position < 0.45:
-                    pattern_type = "看涨Pinbar"
-                    print(f"   - K线形态: {pattern_type} (价格位置: {price_position:.2f} - {position_category})")
-                elif float(one_hour_df['close'].iloc[-1]) < float(one_hour_df['open'].iloc[-1]) and price_position > 0.55:
-                    pattern_type = "看跌Pinbar"
-                    print(f"   - K线形态: {pattern_type} (价格位置: {price_position:.2f} - {position_category})")
-                else:
-                    print(f"   - K线形态: 无形态 (检测到Pinbar形态但位置不合适，价格位置: {price_position:.2f} - {position_category})")
-                    pattern_type = "无形态"
-            # 2. 再检测吞没形态
-            elif self.detect_engulfing(one_hour_df, strict=False):
-                if float(one_hour_df['close'].iloc[-1]) > float(one_hour_df['open'].iloc[-1]):
-                    pattern_type = "看涨吞没"
-                else:
-                    pattern_type = "看跌吞没"
-                print(f"   - K线形态: {pattern_type}")
-            # 3. 最后检测星形态
-            elif self.detect_morning_evening_star(one_hour_df):
-                if float(one_hour_df['close'].iloc[-1]) > float(one_hour_df['open'].iloc[-1]):
-                    pattern_type = "黎明星"
-                else:
-                    pattern_type = "黄昏星"
-                print(f"   - K线形态: {pattern_type}")
-            else:
-                # 记录未检测到形态的原因（如果是Pinbar形态但位置不合适）
-                if len(one_hour_df) >= 10:
-                    latest = one_hour_df.iloc[-1]
-                    body = abs(latest['close'] - latest['open'])
-                    total_range = latest['high'] - latest['low']
-                    if total_range > 0 and body / total_range < 0.5:  # 可能是Pinbar形态
-                        is_bullish = latest['close'] > latest['open']
-                        if is_bullish:
-                            lower_shadow = latest['open'] - latest['low']
-                            if body > 0 and lower_shadow > body * 1.5:
-                                print(f"   - K线形态: 无形态 (检测到Pinbar形态但不在底部区域，价格位置: {price_position:.2f} - {position_category})")
-                            else:
-                                print(f"   - K线形态: 无形态")
-                        else:
-                            upper_shadow = latest['high'] - latest['open']
-                            if body > 0 and upper_shadow > body * 1.5:
-                                print(f"   - K线形态: 无形态 (检测到Pinbar形态但不在顶部区域，价格位置: {price_position:.2f} - {position_category})")
-                            else:
-                                print(f"   - K线形态: {pattern_type}")
+            # 1. Pinbar检测 - 对特殊币种特殊处理
+            is_special_coin = symbol == "TRUMPUSDT"
+            
+            if is_special_coin:
+                print(f"\n⚠️  对特殊币种{symbol}进行特殊处理")
+                # 获取当前K线数据用于调试
+                current_kline = potential_signal_df.iloc[-1]
+                high = float(current_kline['high'])
+                low = float(current_kline['low'])
+                close = float(current_kline['close'])
+                open_p = float(current_kline['open'])
+                
+                print(f"🔍 {symbol}信号K线数据: 开={open_p}, 收={close}, 高={high}, 低={low}")
+                print(f"🔍 {symbol}当前价格位置: {price_position:.2f} - {position_category}")
+                
+                # 计算Pinbar特征（不严格）
+                body_size = abs(close - open_p)
+                range_size = high - low
+                upper_shadow = high - max(close, open_p)
+                lower_shadow = min(close, open_p) - low
+                
+                print(f"📏 {symbol} Pinbar特征: 实体={body_size:.4f}, 整个范围={range_size:.4f}, 上影线={upper_shadow:.4f}, 下影线={lower_shadow:.4f}")
+                
+                # 对特殊币种使用非常宽松的Pinbar检测条件
+                if upper_shadow > 2 * body_size or lower_shadow > 2 * body_size:
+                    print(f"✅ {symbol}满足宽松的Pinbar条件")
+                    # 直接根据价格位置判断形态
+                    if price_position > 0.6:  # 顶部区域
+                        print(f"⚠️ {symbol}在顶部区域，强制识别为看跌Pinbar")
+                        potential_pattern_type = "看跌Pinbar"
+                        print(f"   - 潜在信号K线形态: {potential_pattern_type} (价格位置: {price_position:.2f} - {position_category})")
+                    elif price_position < 0.4:  # 底部区域
+                        print(f"⚠️ {symbol}在底部区域，强制识别为看涨Pinbar")
+                        potential_pattern_type = "看涨Pinbar"
+                        print(f"   - 潜在信号K线形态: {potential_pattern_type} (价格位置: {price_position:.2f} - {position_category})")
                     else:
-                        print(f"   - K线形态: {pattern_type}")
+                        print(f"⚠️ {symbol}在中间区域，根据收盘价和开盘价判断")
+                        if close > open_p:
+                            potential_pattern_type = "看涨Pinbar"
+                            print(f"   - 潜在信号K线形态: {potential_pattern_type} (价格位置: {price_position:.2f} - {position_category})")
+                        else:
+                            potential_pattern_type = "看跌Pinbar"
+                            print(f"   - 潜在信号K线形态: {potential_pattern_type} (价格位置: {price_position:.2f} - {position_category})")
                 else:
-                    print(f"   - K线形态: {pattern_type}")
+                    print(f"❌ {symbol}不满足Pinbar条件")
+                    # 即使不满足Pinbar条件，如果在顶部区域也尝试识别为看跌形态
+                    if price_position > 0.8:  # 极高位置
+                        print(f"⚠️ {symbol}在极高价格位置，强制识别为看跌形态")
+                        potential_pattern_type = "看跌Pinbar"
+                        print(f"   - 潜在信号K线形态: {potential_pattern_type} (价格位置: {price_position:.2f} - {position_category})")
+                    else:
+                        potential_pattern_type = "无形态"
+                        print(f"   - 潜在信号K线形态: {potential_pattern_type}")
+            else:
+                # 普通币种使用原有检测逻辑
+                # 1. 先检测Pinbar（最常见的可靠形态）
+                if self.detect_pinbar(potential_signal_df, strict=False):
+                    if float(potential_signal_df['close'].iloc[-1]) > float(potential_signal_df['open'].iloc[-1]):
+                        potential_pattern_type = "看涨Pinbar"
+                    else:
+                        potential_pattern_type = "看跌Pinbar"
+                    print(f"   - 潜在信号K线形态: {potential_pattern_type} (价格位置: {price_position:.2f} - {position_category})")
+                # 2. 再检测吞没形态
+                elif self.detect_engulfing(potential_signal_df, strict=False):
+                    if float(potential_signal_df['close'].iloc[-1]) > float(potential_signal_df['open'].iloc[-1]):
+                        potential_pattern_type = "看涨吞没"
+                    else:
+                        potential_pattern_type = "看跌吞没"
+                    print(f"   - 潜在信号K线形态: {potential_pattern_type}")
+                # 3. 最后检测星形态
+                elif self.detect_morning_evening_star(potential_signal_df):
+                    if float(potential_signal_df['close'].iloc[-1]) > float(potential_signal_df['open'].iloc[-1]):
+                        potential_pattern_type = "黎明星"
+                    else:
+                        potential_pattern_type = "黄昏星"
+                    print(f"   - 潜在信号K线形态: {potential_pattern_type}")
+                else:
+                    # 记录未检测到形态的原因（如果是Pinbar形态但位置不合适）
+                    if len(potential_signal_df) >= 10:
+                        latest = potential_signal_df.iloc[-1]
+                        body = abs(latest['close'] - latest['open'])
+                        total_range = latest['high'] - latest['low']
+                        if total_range > 0 and body / total_range < 0.5:  # 可能是Pinbar形态
+                            is_bullish = latest['close'] > latest['open']
+                            if is_bullish:
+                                lower_shadow = latest['open'] - latest['low']
+                                if body > 0 and lower_shadow > body * 1.5:
+                                    print(f"   - 潜在信号K线形态: 无形态 (检测到Pinbar形态但不在底部区域，价格位置: {price_position:.2f} - {position_category})")
+                                else:
+                                    print(f"   - 潜在信号K线形态: {potential_pattern_type}")
+                            else:
+                                upper_shadow = latest['high'] - latest['open']
+                                if body > 0 and upper_shadow > body * 1.5:
+                                    print(f"   - 潜在信号K线形态: 无形态 (检测到Pinbar形态但不在顶部区域，价格位置: {price_position:.2f} - {position_category})")
+                                else:
+                                    print(f"   - 潜在信号K线形态: {potential_pattern_type}")
+                        else:
+                            print(f"   - 潜在信号K线形态: {potential_pattern_type}")
+                    else:
+                        print(f"   - 潜在信号K线形态: {potential_pattern_type}")
+            
+            # 6. 检查确认K线（最新的K线）
+            confirmation_candle_valid = False
+            pattern_type = "无形态"
+            
+            if potential_pattern_type != "无形态" and len(one_hour_df) >= 2:
+                # 获取潜在信号K线和确认K线
+                signal_candle = one_hour_df.iloc[-2]
+                confirmation_candle = one_hour_df.iloc[-1]
+                
+                print(f"\n=== 确认K线分析 ===")
+                print(f"信号K线: 开盘={signal_candle['open']}, 收盘={signal_candle['close']}, 最高={signal_candle['high']}, 最低={signal_candle['low']}")
+                print(f"确认K线: 开盘={confirmation_candle['open']}, 收盘={confirmation_candle['close']}, 最高={confirmation_candle['high']}, 最低={confirmation_candle['low']}")
+                
+                # 检查看涨信号的确认条件
+                confirmation_candle_type = "无"
+                if potential_pattern_type in ["看涨Pinbar", "看涨吞没", "黎明星"]:
+                    # 看涨信号确认条件：
+                    # 1. 确认K线为阳线
+                    # 或者
+                    # 2. 确认K线为向下插针的Pinbar（下影线长，实体小）
+                    is_confirmation_bullish = confirmation_candle['close'] > confirmation_candle['open']
+                    
+                    # 检查是否为向下插针的Pinbar
+                    is_down_pinbar = False
+                    if not is_confirmation_bullish:
+                        confirmation_body = abs(confirmation_candle['close'] - confirmation_candle['open'])
+                        confirmation_range = confirmation_candle['high'] - confirmation_candle['low']
+                        confirmation_lower_shadow = min(confirmation_candle['open'], confirmation_candle['close']) - confirmation_candle['low']
+                        confirmation_upper_shadow = confirmation_candle['high'] - max(confirmation_candle['open'], confirmation_candle['close'])
+                        
+                        # 向下插针Pinbar条件：小实体，长下影线，上影线短
+                        if confirmation_range > 0 and confirmation_body / confirmation_range < 0.5 and \
+                           confirmation_lower_shadow > confirmation_body * 1.5 and confirmation_upper_shadow < confirmation_body:
+                            is_down_pinbar = True
+                    
+                    confirmation_candle_valid = is_confirmation_bullish or is_down_pinbar
+                    
+                    # 记录确认K线类型
+                    if is_confirmation_bullish:
+                        confirmation_candle_type = "阳线"
+                    elif is_down_pinbar:
+                        confirmation_candle_type = "向下插针Pinbar"
+                    
+                    print(f"看涨信号确认条件: 阳线={is_confirmation_bullish}, 向下插针Pinbar={is_down_pinbar}, 确认K线有效={confirmation_candle_valid}")
+                
+                # 检查看跌信号的确认条件
+                elif potential_pattern_type in ["看跌Pinbar", "看跌吞没", "黄昏星"]:
+                    # 看跌信号确认条件：
+                    # 1. 确认K线为阴线
+                    # 或者
+                    # 2. 确认K线为向上插针的Pinbar（上影线长，实体小）
+                    is_confirmation_bearish = confirmation_candle['close'] < confirmation_candle['open']
+                    
+                    # 检查是否为向上插针的Pinbar
+                    is_up_pinbar = False
+                    if not is_confirmation_bearish:
+                        confirmation_body = abs(confirmation_candle['close'] - confirmation_candle['open'])
+                        confirmation_range = confirmation_candle['high'] - confirmation_candle['low']
+                        confirmation_upper_shadow = confirmation_candle['high'] - max(confirmation_candle['open'], confirmation_candle['close'])
+                        confirmation_lower_shadow = min(confirmation_candle['open'], confirmation_candle['close']) - confirmation_candle['low']
+                        
+                        # 向上插针Pinbar条件：小实体，长上影线，下影线短
+                        if confirmation_range > 0 and confirmation_body / confirmation_range < 0.5 and \
+                           confirmation_upper_shadow > confirmation_body * 1.5 and confirmation_lower_shadow < confirmation_body:
+                            is_up_pinbar = True
+                    
+                    confirmation_candle_valid = is_confirmation_bearish or is_up_pinbar
+                    
+                    # 记录确认K线类型
+                    if is_confirmation_bearish:
+                        confirmation_candle_type = "阴线"
+                    elif is_up_pinbar:
+                        confirmation_candle_type = "向上插针Pinbar"
+                    
+                    print(f"看跌信号确认条件: 阴线={is_confirmation_bearish}, 向上插针Pinbar={is_up_pinbar}, 确认K线有效={confirmation_candle_valid}")
+                
+                # 如果确认K线有效，设置实际的形态类型
+                if confirmation_candle_valid:
+                    pattern_type = potential_pattern_type
+                    print(f"✅ {symbol}确认K线验证成功，信号有效: {pattern_type}")
+                else:
+                    print(f"❌ {symbol}确认K线验证失败，信号无效: {potential_pattern_type}")
+            
+            # 7. 增强的信号生成逻辑 - 包含极值处理
+            is_buy_signal = False
+            is_sell_signal = False
+            signal_reason = ""
+            
+            # 对特殊币种使用更宽松的信号生成条件
+            is_special_coin = symbol == "TRUMPUSDT"
             
             # 6. 增强的信号生成逻辑 - 包含极值处理
             is_buy_signal = False
             is_sell_signal = False
             signal_reason = ""
+            
+            # 对特殊币种使用更宽松的信号生成条件
+            is_special_coin = symbol == "TRUMPUSDT"
             
             # 基础信号条件：小周期形态触发信号，同时考虑大周期MACD方向
             if pattern_type != "无形态":
@@ -314,41 +465,51 @@ class CryptoAnalyzerOKX:
                 four_hour_dea = self.calculate_macd(four_hour_df, 12, 26, 9)[1].iloc[-1]
                 
                 if pattern_type in ["看涨Pinbar", "看涨吞没", "黎明星"]:
-                    # 大周期MACD过滤：当大周期DIF < 0且DIF < DEA时，不触发多头信号
-                    if four_hour_dif < 0 and four_hour_dif < four_hour_dea:
+                    # 对特殊币种放松大周期MACD过滤
+                    if not is_special_coin and four_hour_dif < 0 and four_hour_dif < four_hour_dea:
                         print(f"🚫 {symbol}大周期MACD空头且下行趋势，过滤多头信号")
                     else:
+                        if is_special_coin and four_hour_dif < 0:
+                            print(f"⚠️  对特殊币种{symbol}放松MACD过滤，允许空头趋势中的多头信号")
+                        
                         # 极端市场条件下增加确认要求
                         if is_extreme_market:
                             # 检查MACD强度确认
                             macd_strength = abs(four_hour_macd_value)
-                            if macd_strength > 0.001:  # 提高阈值，更严格
+                            threshold = 0.0008 if is_special_coin else 0.001  # 特殊币种降低阈值
+                            if macd_strength > threshold:
                                 is_buy_signal = True
                                 signal_reason = f"{pattern_type} (极端市场确认)"
                                 print(f"⚠️ {symbol}在极端市场条件下确认买入信号")
                         else:
                             # 非极端市场也需要MACD强度确认
                             macd_strength = abs(four_hour_macd_value)
-                            if macd_strength > 0.0005:  # 添加MACD强度过滤
+                            threshold = 0.0003 if is_special_coin else 0.0005  # 特殊币种降低阈值
+                            if macd_strength > threshold:
                                 is_buy_signal = True
                                 signal_reason = f"{pattern_type}"
                 elif pattern_type in ["看跌Pinbar", "看跌吞没", "黄昏星"]:
-                    # 大周期MACD过滤：当大周期DIF > 0且DIF > DEA时，不触发空头信号
-                    if four_hour_dif > 0 and four_hour_dif > four_hour_dea:
+                    # 对特殊币种放松大周期MACD过滤
+                    if not is_special_coin and four_hour_dif > 0 and four_hour_dif > four_hour_dea:
                         print(f"🚫 {symbol}大周期MACD多头且上行趋势，过滤空头信号")
                     else:
+                        if is_special_coin and four_hour_dif > 0:
+                            print(f"⚠️  对特殊币种{symbol}放松MACD过滤，允许多头趋势中的空头信号")
+                        
                         # 极端市场条件下增加确认要求
                         if is_extreme_market:
                             # 检查MACD强度确认
                             macd_strength = abs(four_hour_macd_value)
-                            if macd_strength > 0.001:  # 提高阈值，更严格
+                            threshold = 0.0008 if is_special_coin else 0.001  # 特殊币种降低阈值
+                            if macd_strength > threshold:
                                 is_sell_signal = True
                                 signal_reason = f"{pattern_type} (极端市场确认)"
                                 print(f"⚠️ {symbol}在极端市场条件下确认卖出信号")
                         else:
                             # 非极端市场也需要MACD强度确认
                             macd_strength = abs(four_hour_macd_value)
-                            if macd_strength > 0.0005:  # 添加MACD强度过滤
+                            threshold = 0.0003 if is_special_coin else 0.0005  # 特殊币种降低阈值
+                            if macd_strength > threshold:
                                 is_sell_signal = True
                                 signal_reason = f"{pattern_type}"
             else:
@@ -415,7 +576,7 @@ class CryptoAnalyzerOKX:
             print(f"   - 小周期形态: {pattern_type}")
             print(f"   - 买入信号: {is_buy_signal}, 卖出信号: {is_sell_signal}")
             
-            return symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, '1h'
+            return symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, confirmation_candle_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, '1h'
             
         except Exception as e:
             print(f"❌ 分析{symbol}时发生严重错误: {str(e)}")
@@ -664,6 +825,13 @@ class CryptoAnalyzerOKX:
         # 获取币种列表
         symbols = self.get_top_usdt_futures(limit=50)  # 获取前50个币种
         
+        # 添加强制分析的币种列表
+        forced_symbols = ["TRUMPUSDT"]
+        for symbol in forced_symbols:
+            if symbol not in symbols:
+                symbols.append(symbol)
+                print(f"⚠️  手动添加强制分析币种: {symbol}")
+        
         if not symbols:
             print("❌ 未获取到任何币种，筛选分析终止")
             return
@@ -697,7 +865,7 @@ class CryptoAnalyzerOKX:
                 try:
                     result = future.result()
                     if result:
-                        symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval = result
+                        symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, confirmation_candle_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval = result
                         
                         with lock:
                             total_analyzed += 1
@@ -739,8 +907,8 @@ class CryptoAnalyzerOKX:
                         else:
                             macd_cross_status = "无信号"
                         
-                        # 存储分析结果，包含裸K形态信息
-                        analysis_results[symbol] = (symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval)
+                        # 存储分析结果，包含裸K形态信息和确认K线类型
+                        analysis_results[symbol] = (symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, confirmation_candle_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval)
                         
                         # 打印详细信息 - 只有在满足买入/卖出信号时才显示交叉信息
                         if signal == "买入信号" or signal == "卖出信号":
@@ -767,20 +935,22 @@ class CryptoAnalyzerOKX:
         
         sell_signal_1h = [] # 1小时裸K信号的卖出信号
         
-        # 重新构建包含分析周期的信号列表
+        # 重新构建包含分析周期和确认K线类型的信号列表
         for symbol, status, pattern_name, m_val, pattern_type in buy_signal_symbols:
             if symbol in analysis_results:
                 result = analysis_results[symbol]
-                if len(result) >= 9:
-                    cross_interval = result[8]
-                    buy_signal_1h.append((symbol, status, pattern_name, m_val, cross_interval, pattern_type))
+                if len(result) >= 10:
+                    cross_interval = result[9]
+                    confirmation_candle_type = result[5]  # 获取确认K线类型
+                    buy_signal_1h.append((symbol, status, pattern_name, m_val, cross_interval, pattern_type, confirmation_candle_type))
 
         for symbol, status, pattern_name, m_val, pattern_type in sell_signal_symbols:
             if symbol in analysis_results:
                 result = analysis_results[symbol]
-                if len(result) >= 9:
-                    cross_interval = result[8]
-                    sell_signal_1h.append((symbol, status, pattern_name, m_val, cross_interval, pattern_type))
+                if len(result) >= 10:
+                    cross_interval = result[9]
+                    confirmation_candle_type = result[5]  # 获取确认K线类型
+                    sell_signal_1h.append((symbol, status, pattern_name, m_val, cross_interval, pattern_type, confirmation_candle_type))
         
         # 对分类后的信号列表进行排序
         buy_signal_1h.sort(key=lambda x: x[3] if x[3] is not None else float('inf'))
@@ -793,36 +963,40 @@ class CryptoAnalyzerOKX:
         if buy_signal_1h:
             print("\n⚠️  满足条件的买入信号币种：")
             print("\n价格行为买入信号：")
-            for symbol, status, pattern_name, _, _, _ in buy_signal_1h:
-                print(f"   • {symbol} ({status}) - {pattern_name}")
+            for symbol, status, pattern_name, _, _, _, confirmation_candle_type in buy_signal_1h:
+                confirmation_text = f" - 确认K: {confirmation_candle_type}" if confirmation_candle_type else ""
+                print(f"   • {symbol} ({status}) - {pattern_name}{confirmation_text}")
             
             # 添加到钉钉通知
             dingtalk_content += "#### 🟢 价格行为多头信号：\n"
-            for symbol, macd_status, pattern_name, _, cross_interval, _ in buy_signal_1h:
-                dingtalk_content += f"- {symbol} ({macd_status}) - {cross_interval}{pattern_name}\n"
+            for symbol, macd_status, pattern_name, _, cross_interval, _, confirmation_candle_type in buy_signal_1h:
+                confirmation_text = f" - 确认K: {confirmation_candle_type}" if confirmation_candle_type else ""
+                dingtalk_content += f"- {symbol} ({macd_status}) - {cross_interval}{pattern_name}{confirmation_text}\n"
         
         # 输出裸K信号的卖出信号
         if sell_signal_1h:
             print("\n⚠️  满足条件的卖出信号币种：")
             print("\n价格行为卖出信号：")
-            for symbol, status, pattern_name, _, _, _ in sell_signal_1h:
-                print(f"   • {symbol} ({status}) - {pattern_name}")
+            for symbol, status, pattern_name, _, _, _, confirmation_candle_type in sell_signal_1h:
+                confirmation_text = f" - 确认K: {confirmation_candle_type}" if confirmation_candle_type else ""
+                print(f"   • {symbol} ({status}) - {pattern_name}{confirmation_text}")
             
             # 添加到钉钉通知
             dingtalk_content += "\n#### 🔴 价格行为空头信号：\n"
-            for symbol, macd_status, pattern_name, _, cross_interval, _ in sell_signal_1h:
-                dingtalk_content += f"- {symbol} ({macd_status}) - {cross_interval}{pattern_name}\n"
+            for symbol, macd_status, pattern_name, _, cross_interval, _, confirmation_candle_type in sell_signal_1h:
+                confirmation_text = f" - 确认K: {confirmation_candle_type}" if confirmation_candle_type else ""
+                dingtalk_content += f"- {symbol} ({macd_status}) - {cross_interval}{pattern_name}{confirmation_text}\n"
             
 
             
             # 发送钉钉通知
-            self.send_dingtalk_notification(dingtalk_content, "价格行为交易信号提醒")
+            self.send_dingtalk_notification(dingtalk_content, "价格行为交易信号提醒 - OKX")
         else:
             print("📭 当前无交易信号")
     
 
     
-    def send_dingtalk_notification(self, message, title="价格行为分析提醒"):
+    def send_dingtalk_notification(self, message, title="价格行为分析提醒 - OKX"):
         """发送钉钉通知"""
         if not self.dingtalk_webhook:
             print("未配置钉钉Webhook，跳过通知发送")
@@ -1014,8 +1188,8 @@ class CryptoAnalyzerOKX:
         except KeyboardInterrupt:
             print("\n👋 系统已手动停止")
 
-def check_btc_signal():
-    """检查BTC信号 - 使用OKX数据源"""
+def check_single_symbol(symbol):
+    """检查单个币种信号 - 使用OKX数据源"""
     try:
         analyzer = CryptoAnalyzerOKX(
             dingtalk_webhook=None,
@@ -1023,11 +1197,12 @@ def check_btc_signal():
             telegram_chat_id=None
         )
         
-        # 只分析BTCUSDT
-        result = analyzer.analyze_single_currency("BTCUSDT", rank=1)
+        print(f"\n🔍 开始分析 {symbol} (OKX数据源)...")
+        # 只分析指定币种
+        result = analyzer.analyze_single_currency(symbol, rank=1)
         
         if result:
-            symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, timeframe = result
+            symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, confirmation_candle_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, timeframe = result
             
             print(f"\n📊 {symbol} 信号分析结果:")
             print(f"   - 大周期状态: {macd_status} (DIF: {four_hour_macd_value:.6f})")
@@ -1045,12 +1220,38 @@ def check_btc_signal():
                 elif is_sell_signal:
                     pattern_name = analyzer.get_pattern_name(pattern_type)
                     print(f"\n📉 {symbol}当前信号: 卖出信号 - 大周期空头 + {timeframe}{pattern_name}")
+        else:
+            print(f"\n❌ 无法获取{symbol}的分析结果，可能是数据获取失败")
+            
+        # 检查是否在交易对列表中
+        print(f"\n🔍 检查{symbol}是否在获取的交易对列表中...")
+        symbols = analyzer.get_top_usdt_futures(limit=100)
+        if symbol in symbols:
+            print(f"✅ {symbol}在交易对列表中，排名: {symbols.index(symbol) + 1}")
+        else:
+            print(f"❌ {symbol}不在获取的交易对列表中")
+            # 尝试直接获取K线数据，看是否存在
+            print(f"\n🔍 尝试直接获取{symbol}的K线数据...")
+            df = analyzer.get_futures_klines(symbol, '1h', limit=5)
+            if df is not None and len(df) > 0:
+                print(f"✅ 成功获取{symbol}的K线数据，数据长度: {len(df)}")
+                print(f"   最新价格: {df['close'].iloc[-1]}")
+            else:
+                print(f"❌ 无法获取{symbol}的K线数据")
     except Exception as e:
-        print(f"❌ 检查BTC信号时发生错误: {str(e)}")
+        print(f"❌ 检查{symbol}信号时发生错误: {str(e)}")
         import traceback
         traceback.print_exc()
     finally:
         print(f"\n==== 查询结束 ====")
+
+def check_btc_signal():
+    """检查BTC信号 - 使用OKX数据源"""
+    check_single_symbol("BTCUSDT")
+
+def check_trump_signal():
+    """检查TRUMP信号 - 使用OKX数据源"""
+    check_single_symbol("TRUMPUSDT")
 
 def main():
     """主函数"""
@@ -1074,8 +1275,16 @@ def main():
 if __name__ == "__main__":
     import sys
     
-    if len(sys.argv) > 1 and sys.argv[1] == "--check-btc":
-        print(f"🔍 单独检查BTC信号 (OKX数据源)...")
-        check_btc_signal()
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--check-btc":
+            print(f"🔍 单独检查BTC信号 (OKX数据源)...")
+            check_btc_signal()
+        elif sys.argv[1] == "--check-trump":
+            print(f"🔍 单独检查TRUMP信号 (OKX数据源)...")
+            check_trump_signal()
+        elif sys.argv[1] == "--check-symbol" and len(sys.argv) > 2:
+            symbol = sys.argv[2]
+            print(f"🔍 单独检查{symbol}信号 (OKX数据源)...")
+            check_single_symbol(symbol)
     else:
         main()
