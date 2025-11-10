@@ -482,16 +482,16 @@ class CryptoAnalyzer:
         # 0表示最低，1表示最高
         price_position = (latest['close'] - recent_low) / recent_range
         
-        # 计算最近10根K线的高低点
-        recent_10_high = data['high'].tail(10).max()
-        recent_10_low = data['low'].tail(10).min()
+        # 计算最近20根K线的高低点
+        recent_20_high = data['high'].tail(20).max()
+        recent_20_low = data['low'].tail(20).min()
         
         # 添加调试信息
         print(f"\n=== Pinbar检测调试信息 ===")
         print(f"K线数据: 开盘={latest['open']}, 收盘={latest['close']}, 最高={latest['high']}, 最低={latest['low']}")
         print(f"实体长度: {body}, 总范围: {total_range}")
         print(f"价格位置: {price_position:.2f}")
-        print(f"最近10根K线最高价: {recent_10_high}, 最近10根K线最低价: {recent_10_low}")
+        print(f"最近20根K线最高价: {recent_20_high}, 最近20根K线最低价: {recent_20_low}")
         
         # 根据严格/宽松模式设置参数
         if strict:
@@ -573,9 +573,9 @@ class CryptoAnalyzer:
     
     def detect_engulfing(self, data, strict=True):
         """检测吞没形态，strict=False时放宽条件"""
-        # 至少需要10根K线来检查极值
-        if len(data) < 10:
-            print(f"吞没形态检测失败: 数据不足，需要至少10根K线")
+        # 至少需要20根K线来检查极值
+        if len(data) < 20:
+            print(f"吞没形态检测失败: 数据不足，需要至少20根K线")
             return False
             
         current = data.iloc[-1]
@@ -589,16 +589,16 @@ class CryptoAnalyzer:
             current_body = abs(current['close'] - current['open'])
             previous_body = abs(previous['close'] - previous['open'])
             
-            # 计算最近10根K线的高低点
-            recent_10_high = data['high'].tail(10).max()
-            recent_10_low = data['low'].tail(10).min()
+            # 计算最近20根K线的高低点
+            recent_20_high = data['high'].tail(20).max()
+            recent_20_low = data['low'].tail(20).min()
             
             # 添加调试信息
             print(f"\n=== 吞没形态检测调试信息 ===")
             print(f"当前K线: 开盘={current['open']}, 收盘={current['close']}, 最高={current['high']}, 最低={current['low']}")
             print(f"前一根K线: 开盘={previous['open']}, 收盘={previous['close']}, 最高={previous['high']}, 最低={previous['low']}")
             print(f"实体长度: 当前={current_body}, 前一根={previous_body}")
-            print(f"最近10根K线最高价: {recent_10_high}, 最近10根K线最低价: {recent_10_low}")
+            print(f"最近20根K线最高价: {recent_20_high}, 最近20根K线最低价: {recent_20_low}")
             
             # 基本形态条件
             basic_condition = False
@@ -618,14 +618,14 @@ class CryptoAnalyzer:
             
             # 添加价格位置条件
             if current['close'] > current['open']:  # 看涨吞没
-                # 看涨吞没的最低价必须是最近10根K的最低价格（考虑浮点数精度）
-                price_condition = current['low'] <= recent_10_low * 1.0001
-                print(f"看涨吞没价格条件: 当前最低价 <= 最近10根K线最低价: {price_condition}")
+                # 看涨吞没的最低价必须是最近20根K的最低价格（考虑浮点数精度）
+                price_condition = current['low'] <= recent_20_low * 1.0001
+                print(f"看涨吞没价格条件: 当前最低价 <= 最近20根K线最低价: {price_condition}")
                 return basic_condition and price_condition
             else:  # 看跌吞没
-                # 看跌吞没的最高价必须是最近10根K的最高价格（考虑浮点数精度）
-                price_condition = current['high'] >= recent_10_high * 0.9999
-                print(f"看跌吞没价格条件: 当前最高价 >= 最近10根K线最高价: {price_condition}")
+                # 看跌吞没的最高价必须是最近20根K的最高价格（考虑浮点数精度）
+                price_condition = current['high'] >= recent_20_high * 0.9999
+                print(f"看跌吞没价格条件: 当前最高价 >= 最近20根K线最高价: {price_condition}")
                 
                 # 修正看跌吞没的收盘价条件：当前收盘低于前K线中点价格
                 mid_price_condition = current['close'] < (previous['open'] + previous['close']) / 2
@@ -637,9 +637,9 @@ class CryptoAnalyzer:
     
     def detect_morning_evening_star(self, data):
         """检测晨星/昏星形态"""
-        # 至少需要10根K线来检查极值
-        if len(data) < 10:
-            print(f"星形态检测失败: 数据不足，需要至少10根K线")
+        # 至少需要20根K线来检查极值
+        if len(data) < 20:
+            print(f"星形态检测失败: 数据不足，需要至少20根K线")
             return False
             
         first = data.iloc[-3]
@@ -668,9 +668,9 @@ class CryptoAnalyzer:
             third['close'] > third['open'] and  # 第三根是阳线
             third['close'] > (first['open'] + first['close']) / 2):  # 第三根收盘价超过第一根中点
             
-            # 黎明星组合K里的最低价格必须是最近10根k的最低价（考虑浮点数精度）
-            price_condition = pattern_low <= recent_10_low * 1.0001
-            print(f"黎明星价格条件: 组合K线最低点 <= 最近10根K线最低价: {price_condition}")
+            # 黎明星组合K里的最低价格必须是最近20根k的最低价（考虑浮点数精度）
+            price_condition = pattern_low <= recent_20_low * 1.0001
+            print(f"黎明星价格条件: 组合K线最低点 <= 最近20根K线最低价: {price_condition}")
             return price_condition
         
         # 昏星条件
@@ -679,9 +679,9 @@ class CryptoAnalyzer:
               third['close'] < third['open'] and  # 第三根是阴线
               third['close'] < (first['open'] + first['close']) / 2):  # 第三根收盘价低于第一根中点
             
-            # 黄昏星组合K里的最高价格必须是最近10根k的最高价（考虑浮点数精度）
-            price_condition = pattern_high >= recent_10_high * 0.9999  # 允许微小误差
-            print(f"黄昏星价格条件: 组合K线最高点 >= 最近10根K线最高价: {price_condition}")
+            # 黄昏星组合K里的最高价格必须是最近20根k的最高价（考虑浮点数精度）
+            price_condition = pattern_high >= recent_20_high * 0.9999  # 允许微小误差
+            print(f"黄昏星价格条件: 组合K线最高点 >= 最近20根K线最高价: {price_condition}")
             return price_condition
         
         return False

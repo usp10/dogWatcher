@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import pytz
 import threading
 import requests
 import urllib3
@@ -104,7 +105,16 @@ class CryptoAnalyzerOKX:
                     df[['open', 'high', 'low', 'close', 'volume', 'quote_volume']] = df[['open', 'high', 'low', 'close', 'volume', 'quote_volume']].astype(float)
                     # 转换时间戳格式 - 修复FutureWarning
                     df['timestamp'] = pd.to_numeric(df['timestamp'])
-                    df['open_time'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    
+                    # 按时间戳升序排序，确保K线数据的时间顺序正确
+                    df = df.sort_values('timestamp', ascending=True).reset_index(drop=True)
+                    print(f"   - 已对K线数据按时间升序排序，共{len(df)}条记录")
+                    
+                    # 添加UTC时间列和本地时间列，确保时区处理正确
+                    df['open_time_utc'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+                    # 明确转换为北京时间（UTC+8）
+                    df['open_time_local'] = df['open_time_utc'].dt.tz_convert('Asia/Shanghai').dt.tz_localize(None)
+                    
                     # 由于OKX不直接提供close_time，我们根据interval计算
                     # 先创建一个映射字典将K线周期转换为分钟数
                     interval_map = {
@@ -113,18 +123,43 @@ class CryptoAnalyzerOKX:
                         '1D': 1440
                     }
                     minutes = interval_map.get(okx_interval, 60)  # 默认60分钟
-                    df['close_time'] = df['open_time'] + timedelta(minutes=minutes)
+                    df['close_time_utc'] = df['open_time_utc'] + timedelta(minutes=minutes)
+                    df['close_time_local'] = df['open_time_local'] + timedelta(minutes=minutes)
                     
-                    # 移除原始timestamp列，只保留处理过的时间列
+                    # 为了兼容原有代码，保留open_time和close_time列
+                    df['open_time'] = df['open_time_local']
+                    df['close_time'] = df['close_time_local']
+                    
+                    # 移除原始timestamp列
                     df = df.drop('timestamp', axis=1)
+                    
+                    # 输出时间信息以调试时差问题
+                    current_time_utc = datetime.now().replace(tzinfo=timezone.utc)
+                    # 明确转换为北京时间（UTC+8）
+                    current_time_local = current_time_utc.astimezone(pytz.timezone('Asia/Shanghai')).replace(tzinfo=None)
+                    
+                    print(f"📊 {symbol} {interval} K线时间信息:")
+                    print(f"   - 当前UTC时间: {current_time_utc.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                    print(f"   - 当前本地时间: {current_time_local.strftime('%Y-%m-%d %H:%M:%S')}")
+                    print(f"   - 最新K线开盘时间(UTC): {df['open_time_utc'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S %Z') if not df.empty else 'N/A'}")
+                    print(f"   - 最新K线开盘时间(本地): {df['open_time_local'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S') if not df.empty else 'N/A'}")
+                    print(f"   - 最新K线收盘时间(UTC): {df['close_time_utc'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S %Z') if not df.empty else 'N/A'}")
+                    print(f"   - 最新K线收盘时间(本地): {df['close_time_local'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S') if not df.empty else 'N/A'}")
                     
                     # 如果需要使用已完成的整点K线
                     if use_completed_candle:
                         # 过滤掉可能正在形成的K线（最新的K线）
                         # 只保留已经完全结束的K线（倒数第二条及之前的）
                         if len(df) > 1:
-                            df = df.iloc[:-1].copy()
-                            print(f"⚠️ 使用已完成的整点K线，过滤掉最新的不完整K线")
+                            # 验证最新K线是否已经收盘
+                            latest_close_time = df['close_time_utc'].iloc[-1]
+                            is_completed = latest_close_time <= current_time_utc
+                            
+                            if not is_completed:
+                                df = df.iloc[:-1].copy()
+                                print(f"⚠️ 使用已完成的整点K线，过滤掉最新的不完整K线 (未到收盘时间: {latest_close_time.strftime('%Y-%m-%d %H:%M:%S %Z')})")
+                            else:
+                                print(f"✅ 最新K线已经完成 (收盘时间: {latest_close_time.strftime('%Y-%m-%d %H:%M:%S %Z')})")
                     
                     return df
                 else:
@@ -143,7 +178,11 @@ class CryptoAnalyzerOKX:
                     if data['code'] == '0' and data['data']:
                         df = pd.DataFrame(data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'quote_volume'])
                         df[['open', 'high', 'low', 'close', 'volume', 'quote_volume']] = df[['open', 'high', 'low', 'close', 'volume', 'quote_volume']].astype(float)
-                        df['open_time'] = pd.to_datetime(df['timestamp'], unit='ms')
+                        
+                        # 添加UTC时间列和本地时间列，确保时区处理正确
+                        df['open_time_utc'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+                        # 明确转换为北京时间（UTC+8）
+                        df['open_time_local'] = df['open_time_utc'].dt.tz_convert('Asia/Shanghai').dt.tz_localize(None)
                         
                         # 计算close_time
                         interval_map = {
@@ -152,7 +191,12 @@ class CryptoAnalyzerOKX:
                             '1D': 1440
                         }
                         minutes = interval_map.get(okx_interval, 60)
-                        df['close_time'] = df['open_time'] + timedelta(minutes=minutes)
+                        df['close_time_utc'] = df['open_time_utc'] + timedelta(minutes=minutes)
+                        df['close_time_local'] = df['open_time_local'] + timedelta(minutes=minutes)
+                        
+                        # 为了兼容原有代码，保留open_time和close_time列
+                        df['open_time'] = df['open_time_local']
+                        df['close_time'] = df['close_time_local']
                         
                         df = df.drop('timestamp', axis=1)
                         return df
@@ -170,13 +214,24 @@ class CryptoAnalyzerOKX:
     def analyze_single_currency(self, symbol, rank=21):
         """分析单个币种的MACD信号和K线形态 - 增强版，包含确认K线功能"""
         try:
+            # 获取当前时间信息
+            current_time_utc = datetime.now().replace(tzinfo=timezone.utc)
+            current_time_local = current_time_utc.astimezone(pytz.timezone('Asia/Shanghai')).replace(tzinfo=None)
+            
             print(f"🔍 开始分析 {symbol} (排名: {rank})...")
+            print(f"   - 分析时间(UTC): {current_time_utc.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            print(f"   - 分析时间(本地): {current_time_local.strftime('%Y-%m-%d %H:%M:%S')}")
             # 初始化确认K线类型变量
             confirmation_candle_type = "无"
             
             # 1. 获取并验证K线数据
             print(f"   - 获取4小时K线数据...")
-            four_hour_df = self.get_futures_klines(symbol, '4h', limit=60)  # 增加数据量
+            # 使用已完成的整点K线，确保使用的数据是完整的
+            four_hour_df = self.get_futures_klines(symbol, '4h', limit=60, use_completed_candle=True)
+            
+            if four_hour_df is not None and len(four_hour_df) > 0:
+                print(f"   - 成功获取4小时K线数据，共{len(four_hour_df)}条记录")
+                print(f"   - 时间范围: {four_hour_df['open_time_local'].iloc[0].strftime('%Y-%m-%d %H:%M:%S')} 至 {four_hour_df['open_time_local'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S')}")
             if four_hour_df is None:
                 print(f"❌ 错误: {symbol} 4小时K线数据获取失败")
                 return None
@@ -184,7 +239,12 @@ class CryptoAnalyzerOKX:
                 print(f"⚠️ 警告: {symbol} 4小时K线数据不足 (仅{len(four_hour_df)}条)，建议>=30条")
             
             print(f"   - 获取1小时K线数据...")
-            one_hour_df = self.get_futures_klines(symbol, '1h', limit=60)
+            # 使用已完成的整点K线，确保使用的数据是完整的
+            one_hour_df = self.get_futures_klines(symbol, '1h', limit=60, use_completed_candle=True)
+            
+            if one_hour_df is not None and len(one_hour_df) > 0:
+                print(f"   - 成功获取1小时K线数据，共{len(one_hour_df)}条记录")
+                print(f"   - 时间范围: {one_hour_df['open_time_local'].iloc[0].strftime('%Y-%m-%d %H:%M:%S')} 至 {one_hour_df['open_time_local'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S')}")
             if one_hour_df is None:
                 print(f"❌ 错误: {symbol} 1小时K线数据获取失败")
                 return None
@@ -368,9 +428,41 @@ class CryptoAnalyzerOKX:
                 signal_candle = one_hour_df.iloc[-2]
                 confirmation_candle = one_hour_df.iloc[-1]
                 
+                # 格式化时间信息（如果是字符串格式的时间，需要转换为datetime对象）
+                def format_time(time_value):
+                    if isinstance(time_value, str):
+                        # 如果是字符串格式的时间戳（毫秒）
+                        try:
+                            return pd.to_datetime(int(time_value), unit='ms')
+                        except:
+                            return time_value
+                    return time_value
+                
+                signal_time_utc = format_time(signal_candle['open_time_utc'])
+                signal_time_local = format_time(signal_candle['open_time_local'])
+                conf_time_utc = format_time(confirmation_candle['open_time_utc'])
+                conf_time_local = format_time(confirmation_candle['open_time_local'])
+                
                 print(f"\n=== 确认K线分析 ===")
-                print(f"信号K线: 开盘={signal_candle['open']}, 收盘={signal_candle['close']}, 最高={signal_candle['high']}, 最低={signal_candle['low']}")
-                print(f"确认K线: 开盘={confirmation_candle['open']}, 收盘={confirmation_candle['close']}, 最高={confirmation_candle['high']}, 最低={confirmation_candle['low']}")
+                print(f"信号K线信息:")
+                print(f"  - 开盘时间(UTC): {signal_time_utc}")
+                print(f"  - 开盘时间(本地): {signal_time_local}")
+                print(f"  - 价格: 开盘={signal_candle['open']}, 收盘={signal_candle['close']}, 最高={signal_candle['high']}, 最低={signal_candle['low']}")
+                print(f"确认K线信息:")
+                print(f"  - 开盘时间(UTC): {conf_time_utc}")
+                print(f"  - 开盘时间(本地): {conf_time_local}")
+                print(f"  - 价格: 开盘={confirmation_candle['open']}, 收盘={confirmation_candle['close']}, 最高={confirmation_candle['high']}, 最低={confirmation_candle['low']}")
+                # 验证时间顺序，确保确认K线时间晚于信号K线
+                if conf_time_utc > signal_time_utc:
+                    print(f"  - 时间差: {conf_time_local - signal_time_local}")
+                    print(f"  ✅ 时间顺序正确: 确认K线时间晚于信号K线")
+                else:
+                    print(f"  ⚠️ 警告: 时间顺序异常! 确认K线时间早于或等于信号K线")
+                    # 如果时间顺序异常，交换信号K线和确认K线
+                    signal_candle, confirmation_candle = confirmation_candle, signal_candle
+                    signal_time_utc, conf_time_utc = conf_time_utc, signal_time_utc
+                    signal_time_local, conf_time_local = conf_time_local, signal_time_local
+                    print(f"  🔄 已自动调整K线顺序，确保分析逻辑正确")
                 
                 # 检查看涨信号的确认条件
                 confirmation_candle_type = "无"
@@ -667,16 +759,16 @@ class CryptoAnalyzerOKX:
             current_body = abs(current['close'] - current['open'])
             previous_body = abs(previous['close'] - previous['open'])
             
-            # 计算最近10根K线的高低点
-            recent_10_high = data['high'].tail(10).max()
-            recent_10_low = data['low'].tail(10).min()
+            # 计算最近20根K线的高低点
+            recent_20_high = data['high'].tail(20).max()
+            recent_20_low = data['low'].tail(20).min()
             
             # 添加调试信息
             print(f"\n=== 吞没形态检测调试信息 ===")
             print(f"当前K线: 开盘={current['open']}, 收盘={current['close']}, 最高={current['high']}, 最低={current['low']}")
             print(f"前一根K线: 开盘={previous['open']}, 收盘={previous['close']}, 最高={previous['high']}, 最低={previous['low']}")
             print(f"实体长度: 当前={current_body}, 前一根={previous_body}")
-            print(f"最近10根K线最高价: {recent_10_high}, 最近10根K线最低价: {recent_10_low}")
+            print(f"最近20根K线最高价: {recent_20_high}, 最近20根K线最低价: {recent_20_low}")
             
             # 基本形态条件
             basic_condition = False
@@ -696,14 +788,14 @@ class CryptoAnalyzerOKX:
             
             # 添加价格位置条件
             if current['close'] > current['open']:  # 看涨吞没
-                # 看涨吞没的最低价必须是最近10根K的最低价格（考虑浮点数精度）
-                price_condition = current['low'] <= recent_10_low * 1.0001
-                print(f"看涨吞没价格条件: 当前最低价 <= 最近10根K线最低价: {price_condition}")
+                # 看涨吞没的最低价必须是最近20根K的最低价格（考虑浮点数精度）
+                price_condition = current['low'] <= recent_20_low * 1.0001
+                print(f"看涨吞没价格条件: 当前最低价 <= 最近20根K线最低价: {price_condition}")
                 return basic_condition and price_condition
             else:  # 看跌吞没
-                # 看跌吞没的最高价必须是最近10根K的最高价格（考虑浮点数精度）
-                price_condition = current['high'] >= recent_10_high * 0.9999
-                print(f"看跌吞没价格条件: 当前最高价 >= 最近10根K线最高价: {price_condition}")
+                # 看跌吞没的最高价必须是最近20根K的最高价格（考虑浮点数精度）
+                price_condition = current['high'] >= recent_20_high * 0.9999
+                print(f"看跌吞没价格条件: 当前最高价 >= 最近20根K线最高价: {price_condition}")
                 
                 # 修正看跌吞没的收盘价条件：当前收盘低于前K线中点价格
                 mid_price_condition = current['close'] < (previous['open'] + previous['close']) / 2
@@ -739,10 +831,10 @@ class CryptoAnalyzerOKX:
         print(f"第三根K线: 开盘={third['open']}, 收盘={third['close']}, 最高={third['high']}, 最低={third['low']}")
         print(f"组合K线最低点: {pattern_low}, 组合K线最高点: {pattern_high}")
         
-        # 计算最近10根K线的高低点
-        recent_10_high = data['high'].tail(10).max()
-        recent_10_low = data['low'].tail(10).min()
-        print(f"最近10根K线最高价: {recent_10_high}, 最近10根K线最低价: {recent_10_low}")
+        # 计算最近20根K线的高低点
+        recent_20_high = data['high'].tail(20).max()
+        recent_20_low = data['low'].tail(20).min()
+        print(f"最近20根K线最高价: {recent_20_high}, 最近20根K线最低价: {recent_20_low}")
         
         # 条件1：第二根K线是小实体（星线）
         if second_body / pattern_range > 0.1:
@@ -1191,6 +1283,7 @@ class CryptoAnalyzerOKX:
 def check_single_symbol(symbol):
     """检查单个币种信号 - 使用OKX数据源"""
     try:
+        # 创建分析器实例
         analyzer = CryptoAnalyzerOKX(
             dingtalk_webhook=None,
             telegram_bot_token=None,
@@ -1198,6 +1291,8 @@ def check_single_symbol(symbol):
         )
         
         print(f"\n🔍 开始分析 {symbol} (OKX数据源)...")
+        print(f"   - 调试模式: 确保使用已完成的K线数据进行分析")
+        
         # 只分析指定币种
         result = analyzer.analyze_single_currency(symbol, rank=1)
         
