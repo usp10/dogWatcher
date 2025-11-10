@@ -1502,7 +1502,7 @@ class CryptoAnalyzer:
         sell_signal_1h.sort(key=lambda x: x[3] if x[3] is not None else float('-inf'), reverse=True)
         
         # 生成钉钉通知内容
-        dingtalk_content = f"### 加密货币信号提醒 - {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        dingtalk_content = f"### 加密货币信号提醒 - 币安 - {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
         
         # 输出裸K信号的买入信号（根据市值排名使用不同周期）
         if buy_signal_1h:
