@@ -744,10 +744,20 @@ class CryptoAnalyzerOKX:
                 return upper_shadow > body * 1.5
     
     def detect_engulfing(self, data, strict=True):
-        """检测吞没形态"""
+        """检测吞没形态
+        包含两种吞没定义：
+        1. 传统吞没：单根K线吞没前一根K线
+        2. 双K吞没：两根连续K线吞没前面一根K线到2/3位置
+        """
+        # 至少需要检查数据长度
         if len(data) < 2:
             return False
+            
+        # 计算最近20根K线的高低点（供所有条件使用）
+        recent_20_high = data['high'].tail(20).max() if len(data) >= 20 else data['high'].max()
+        recent_20_low = data['low'].tail(20).min() if len(data) >= 20 else data['low'].min()
         
+        # 检查传统吞没形态（单根K线吞没前一根）
         current = data.iloc[-1]
         previous = data.iloc[-2]
         
@@ -759,12 +769,8 @@ class CryptoAnalyzerOKX:
             current_body = abs(current['close'] - current['open'])
             previous_body = abs(previous['close'] - previous['open'])
             
-            # 计算最近20根K线的高低点
-            recent_20_high = data['high'].tail(20).max()
-            recent_20_low = data['low'].tail(20).min()
-            
             # 添加调试信息
-            print(f"\n=== 吞没形态检测调试信息 ===")
+            print(f"\n=== 传统吞没形态检测调试信息 ===")
             print(f"当前K线: 开盘={current['open']}, 收盘={current['close']}, 最高={current['high']}, 最低={current['low']}")
             print(f"前一根K线: 开盘={previous['open']}, 收盘={previous['close']}, 最高={previous['high']}, 最低={previous['low']}")
             print(f"实体长度: 当前={current_body}, 前一根={previous_body}")
@@ -791,7 +797,9 @@ class CryptoAnalyzerOKX:
                 # 看涨吞没的最低价必须是最近20根K的最低价格（考虑浮点数精度）
                 price_condition = current['low'] <= recent_20_low * 1.0001
                 print(f"看涨吞没价格条件: 当前最低价 <= 最近20根K线最低价: {price_condition}")
-                return basic_condition and price_condition
+                if basic_condition and price_condition:
+                    print("✓ 满足传统看涨吞没条件")
+                    return True
             else:  # 看跌吞没
                 # 看跌吞没的最高价必须是最近20根K的最高价格（考虑浮点数精度）
                 price_condition = current['high'] >= recent_20_high * 0.9999
@@ -801,8 +809,75 @@ class CryptoAnalyzerOKX:
                 mid_price_condition = current['close'] < (previous['open'] + previous['close']) / 2
                 print(f"看跌吞没收盘价条件: 当前收盘 < 前K线中点价格: {mid_price_condition}")
                 
-                return basic_condition and price_condition and mid_price_condition
+                if basic_condition and price_condition and mid_price_condition:
+                    print("✓ 满足传统看跌吞没条件")
+                    return True
         
+        # 检查双K吞没形态（两根K线吞没前面一根）
+        if len(data) >= 4:
+            # 获取K线数据
+            first = data.iloc[-4]  # 第一根K线（被吞没的K线）
+            second = data.iloc[-3]  # 第二根K线（吞没的第一根K线）
+            third = data.iloc[-2]   # 第三根K线（吞没的第二根K线）
+            
+            # 计算实体长度
+            first_body = abs(first['close'] - first['open'])
+            second_body = abs(second['close'] - second['open'])
+            third_body = abs(third['close'] - third['open'])
+            
+            print(f"\n=== 双K吞没形态检测调试信息 ===")
+            print(f"第一根K线(被吞没): 开盘={first['open']}, 收盘={first['close']}, 最高={first['high']}, 最低={first['low']}")
+            print(f"第二根K线: 开盘={second['open']}, 收盘={second['close']}, 最高={second['high']}, 最低={second['low']}")
+            print(f"第三根K线: 开盘={third['open']}, 收盘={third['close']}, 最高={third['high']}, 最低={third['low']}")
+            print(f"实体长度: 第一根={first_body}, 第二根={second_body}, 第三根={third_body}")
+            
+            # 条件1：看跌双K吞没 - 阳线被后面2根阴线吞没到2/3
+            if first['close'] > first['open'] and  # 第一根是阳线
+               second['close'] < second['open'] and  # 第二根是阴线
+               third['close'] < third['open']:  # 第三根是阴线
+                
+                # 计算阳线实体的2/3位置
+                bull_body_2_3 = first['open'] + (first['close'] - first['open']) * 2/3
+                
+                # 双K吞没条件：两根阴线的收盘价都低于阳线实体的2/3位置
+                is_bullish_engulfed = (second['close'] < bull_body_2_3 and 
+                                      third['close'] < bull_body_2_3)
+                
+                # 价格位置条件：第三根阴线的最高价接近最近20根K线的最高价
+                price_condition = third['high'] >= recent_20_high * 0.9999
+                
+                print(f"看跌双K吞没条件 - 阳线实体2/3位置: {bull_body_2_3}")
+                print(f"看跌双K吞没条件 - 两根阴线收盘价是否低于阳线2/3: {is_bullish_engulfed}")
+                print(f"看跌双K吞没价格条件: 第三根阴线最高价 >= 最近20根K线最高价: {price_condition}")
+                
+                if is_bullish_engulfed and price_condition:
+                    print("✓ 满足看跌双K吞没条件")
+                    return True
+            
+            # 条件2：看涨双K吞没 - 阴线被后面2根阳线吞没到2/3
+            elif first['close'] < first['open'] and  # 第一根是阴线
+                 second['close'] > second['open'] and  # 第二根是阳线
+                 third['close'] > third['open']:  # 第三根是阳线
+                
+                # 计算阴线实体的2/3位置
+                bear_body_2_3 = first['open'] + (first['close'] - first['open']) * 1/3  # 注意：阴线的2/3位置是从开盘价向下的2/3
+                
+                # 双K吞没条件：两根阳线的收盘价都高于阴线实体的2/3位置
+                is_bearish_engulfed = (second['close'] > bear_body_2_3 and 
+                                      third['close'] > bear_body_2_3)
+                
+                # 价格位置条件：第三根阳线的最低价接近最近20根K线的最低价
+                price_condition = third['low'] <= recent_20_low * 1.0001
+                
+                print(f"看涨双K吞没条件 - 阴线实体2/3位置: {bear_body_2_3}")
+                print(f"看涨双K吞没条件 - 两根阳线收盘价是否高于阴线2/3: {is_bearish_engulfed}")
+                print(f"看涨双K吞没价格条件: 第三根阳线最低价 <= 最近20根K线最低价: {price_condition}")
+                
+                if is_bearish_engulfed and price_condition:
+                    print("✓ 满足看涨双K吞没条件")
+                    return True
+        
+        # 未满足任何吞没条件
         return False
     
     def detect_morning_evening_star(self, data):

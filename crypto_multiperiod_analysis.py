@@ -452,9 +452,9 @@ class CryptoAnalyzer:
         - 看涨Pinbar：上影线不能超过实体长度，且最低价为最近10根K线最低
         - 看跌Pinbar：下影线不能超过实体长度，且最高价为最近10根K线最高
         """
-        # 至少需要10根K线来判断价格位置和检查极值
-        if len(data) < 10:
-            print(f"Pinbar检测失败: 数据不足，需要至少10根K线")
+        # 至少需要20根K线来判断价格位置和检查极值
+        if len(data) < 20:
+            print(f"Pinbar检测失败: 数据不足，需要至少20根K线")
             return False
             
         latest = data.iloc[-1]
@@ -468,17 +468,19 @@ class CryptoAnalyzer:
             print(f"Pinbar检测失败: K线无波动")
             return False
         
-        # 计算价格位置 - 使用最近10根K线的高低点范围
-        recent_high = data['high'].tail(10).max()
-        recent_low = data['low'].tail(10).min()
+        # 计算价格位置 - 使用最近20根K线的高低点范围
+        recent_high = data['high'].tail(20).max()
+        recent_low = data['low'].tail(20).min()
+        recent_20_high = recent_high  # 定义用于极值判断的变量
+        recent_20_low = recent_low    # 定义用于极值判断的变量
         recent_range = recent_high - recent_low
         
         # 避免除零错误
         if recent_range == 0:
-            print(f"Pinbar检测失败: 最近10根K线无波动")
+            print(f"Pinbar检测失败: 最近20根K线无波动")
             return False
         
-        # 计算当前K线收盘价在最近10根K线中的相对位置（0-1）
+        # 计算当前K线收盘价在最近20根K线中的相对位置（0-1）
         # 0表示最低，1表示最高
         price_position = (latest['close'] - recent_low) / recent_range
         
@@ -530,9 +532,9 @@ class CryptoAnalyzer:
             upper_shadow_condition = upper_shadow <= body
             print(f"上影线 <= 实体长度: {upper_shadow_condition}, 上影线={upper_shadow}, 实体={body}")
             
-            # 新条件2：最低价格需要是最近10根K线的最低价（考虑浮点数精度问题）
-            is_recent_lowest = latest['low'] <= recent_10_low * 1.0001  # 允许微小误差
-            print(f"最低价是否为最近10根最低: {is_recent_lowest}, 当前最低={latest['low']}, 参考最低={recent_10_low}")
+            # 新条件2：最低价格需要是最近20根K线的最低价（考虑浮点数精度问题）
+            is_recent_lowest = latest['low'] <= recent_20_low * 1.0001  # 允许微小误差
+            print(f"最低价是否为最近20根最低: {is_recent_lowest}, 当前最低={latest['low']}, 参考最低={recent_20_low}")
             
             # 看涨Pinbar的形态条件：小实体，长下影线
             pinbar_pattern = body_ratio < body_ratio_threshold and lower_shadow > body * shadow_ratio_threshold
@@ -557,9 +559,9 @@ class CryptoAnalyzer:
             lower_shadow_condition = lower_shadow <= body
             print(f"下影线 <= 实体长度: {lower_shadow_condition}, 下影线={lower_shadow}, 实体={body}")
             
-            # 新条件2：最高价格需要是最近10根K线的最高价（考虑浮点数精度问题）
-            is_recent_highest = latest['high'] >= recent_10_high * 0.9999  # 允许微小误差
-            print(f"最高价是否为最近10根最高: {is_recent_highest}, 当前最高={latest['high']}, 参考最高={recent_10_high}")
+            # 新条件2：最高价格需要是最近20根K线的最高价（考虑浮点数精度问题）
+            is_recent_highest = latest['high'] >= recent_20_high * 0.9999  # 允许微小误差
+            print(f"最高价是否为最近20根最高: {is_recent_highest}, 当前最高={latest['high']}, 参考最高={recent_20_high}")
             
             # 看跌Pinbar的形态条件：小实体，长上影线
             pinbar_pattern = body_ratio < body_ratio_threshold and upper_shadow > body * shadow_ratio_threshold
@@ -572,67 +574,144 @@ class CryptoAnalyzer:
         return result
     
     def detect_engulfing(self, data, strict=True):
-        """检测吞没形态，strict=False时放宽条件"""
+        """检测吞没形态，strict=False时放宽条件
+        包含两种吞没定义：
+        1. 传统吞没：单根K线吞没前一根K线
+        2. 双K吞没：两根连续K线吞没前面一根K线到2/3位置
+        """
         # 至少需要20根K线来检查极值
         if len(data) < 20:
             print(f"吞没形态检测失败: 数据不足，需要至少20根K线")
             return False
             
-        current = data.iloc[-1]
-        previous = data.iloc[-2]
+        # 计算最近20根K线的高低点（供所有条件使用）
+        recent_20_high = data['high'].tail(20).max()
+        recent_20_low = data['low'].tail(20).min()
         
-        # 检查是否颜色相反
-        if (current['close'] > current['open'] and previous['close'] < previous['open']) or \
-           (current['close'] < current['open'] and previous['close'] > previous['open']):
+        # 检查传统吞没形态（单根K线吞没前一根）
+        if len(data) >= 2:
+            current = data.iloc[-1]
+            previous = data.iloc[-2]
+            
+            # 检查是否颜色相反
+            if (current['close'] > current['open'] and previous['close'] < previous['open']) or \
+               (current['close'] < current['open'] and previous['close'] > previous['open']):
+                
+                # 计算实体长度
+                current_body = abs(current['close'] - current['open'])
+                previous_body = abs(previous['close'] - previous['open'])
+                
+                # 添加调试信息
+                print(f"\n=== 传统吞没形态检测调试信息 ===")
+                print(f"当前K线: 开盘={current['open']}, 收盘={current['close']}, 最高={current['high']}, 最低={current['low']}")
+                print(f"前一根K线: 开盘={previous['open']}, 收盘={previous['close']}, 最高={previous['high']}, 最低={previous['low']}")
+                print(f"实体长度: 当前={current_body}, 前一根={previous_body}")
+                print(f"最近20根K线最高价: {recent_20_high}, 最近20根K线最低价: {recent_20_low}")
+                
+                # 基本形态条件
+                basic_condition = False
+                if strict:
+                    # 严格条件：当前K线完全吞没前一根K线
+                    if current['close'] > current['open']:  # 看涨吞没
+                        basic_condition = (current['open'] < previous['close'] and 
+                                          current['close'] > previous['open'] and 
+                                          current_body > previous_body * 1.2)
+                    else:  # 看跌吞没
+                        basic_condition = (current['open'] > previous['close'] and 
+                                          current['close'] < previous['open'] and 
+                                          current_body > previous_body * 1.2)
+                else:
+                    # 宽松条件：当前K线实体大于前一根K线实体的2/3
+                    basic_condition = current_body > previous_body * 0.667
+                
+                # 添加价格位置条件
+                if current['close'] > current['open']:  # 看涨吞没
+                    # 看涨吞没的最低价必须是最近20根K的最低价格（考虑浮点数精度）
+                    price_condition = current['low'] <= recent_20_low * 1.0001
+                    print(f"看涨吞没价格条件: 当前最低价 <= 最近20根K线最低价: {price_condition}")
+                    if basic_condition and price_condition:
+                        print("✓ 满足传统看涨吞没条件")
+                        return True
+                else:  # 看跌吞没
+                    # 看跌吞没的最高价必须是最近20根K的最高价格（考虑浮点数精度）
+                    price_condition = current['high'] >= recent_20_high * 0.9999
+                    print(f"看跌吞没价格条件: 当前最高价 >= 最近20根K线最高价: {price_condition}")
+                    
+                    # 修正看跌吞没的收盘价条件：当前收盘低于前K线中点价格
+                    mid_price_condition = current['close'] < (previous['open'] + previous['close']) / 2
+                    print(f"看跌吞没收盘价条件: 当前收盘 < 前K线中点价格: {mid_price_condition}")
+                    
+                    if basic_condition and price_condition and mid_price_condition:
+                        print("✓ 满足传统看跌吞没条件")
+                        return True
+        
+        # 检查双K吞没形态（两根K线吞没前面一根）
+        if len(data) >= 4:
+            # 获取K线数据
+            first = data.iloc[-4]  # 第一根K线（被吞没的K线）
+            second = data.iloc[-3]  # 第二根K线（吞没的第一根K线）
+            third = data.iloc[-2]   # 第三根K线（吞没的第二根K线）
             
             # 计算实体长度
-            current_body = abs(current['close'] - current['open'])
-            previous_body = abs(previous['close'] - previous['open'])
+            first_body = abs(first['close'] - first['open'])
+            second_body = abs(second['close'] - second['open'])
+            third_body = abs(third['close'] - third['open'])
             
-            # 计算最近20根K线的高低点
-            recent_20_high = data['high'].tail(20).max()
-            recent_20_low = data['low'].tail(20).min()
+            print(f"\n=== 双K吞没形态检测调试信息 ===")
+            print(f"第一根K线(被吞没): 开盘={first['open']}, 收盘={first['close']}, 最高={first['high']}, 最低={first['low']}")
+            print(f"第二根K线: 开盘={second['open']}, 收盘={second['close']}, 最高={second['high']}, 最低={second['low']}")
+            print(f"第三根K线: 开盘={third['open']}, 收盘={third['close']}, 最高={third['high']}, 最低={third['low']}")
+            print(f"实体长度: 第一根={first_body}, 第二根={second_body}, 第三根={third_body}")
             
-            # 添加调试信息
-            print(f"\n=== 吞没形态检测调试信息 ===")
-            print(f"当前K线: 开盘={current['open']}, 收盘={current['close']}, 最高={current['high']}, 最低={current['low']}")
-            print(f"前一根K线: 开盘={previous['open']}, 收盘={previous['close']}, 最高={previous['high']}, 最低={previous['low']}")
-            print(f"实体长度: 当前={current_body}, 前一根={previous_body}")
-            print(f"最近20根K线最高价: {recent_20_high}, 最近20根K线最低价: {recent_20_low}")
-            
-            # 基本形态条件
-            basic_condition = False
-            if strict:
-                # 严格条件：当前K线完全吞没前一根K线
-                if current['close'] > current['open']:  # 看涨吞没
-                    basic_condition = (current['open'] < previous['close'] and 
-                                      current['close'] > previous['open'] and 
-                                      current_body > previous_body * 1.2)
-                else:  # 看跌吞没
-                    basic_condition = (current['open'] > previous['close'] and 
-                                      current['close'] < previous['open'] and 
-                                      current_body > previous_body * 1.2)
-            else:
-                # 宽松条件：当前K线实体大于前一根K线实体的2/3
-                basic_condition = current_body > previous_body * 0.667
-            
-            # 添加价格位置条件
-            if current['close'] > current['open']:  # 看涨吞没
-                # 看涨吞没的最低价必须是最近20根K的最低价格（考虑浮点数精度）
-                price_condition = current['low'] <= recent_20_low * 1.0001
-                print(f"看涨吞没价格条件: 当前最低价 <= 最近20根K线最低价: {price_condition}")
-                return basic_condition and price_condition
-            else:  # 看跌吞没
-                # 看跌吞没的最高价必须是最近20根K的最高价格（考虑浮点数精度）
-                price_condition = current['high'] >= recent_20_high * 0.9999
-                print(f"看跌吞没价格条件: 当前最高价 >= 最近20根K线最高价: {price_condition}")
+            # 条件1：看跌双K吞没 - 阳线被后面2根阴线吞没到2/3
+            # 第一根是阳线，第二根和第三根是阴线
+            if (first['close'] > first['open'] and 
+                second['close'] < second['open'] and 
+                third['close'] < third['open']):
                 
-                # 修正看跌吞没的收盘价条件：当前收盘低于前K线中点价格
-                mid_price_condition = current['close'] < (previous['open'] + previous['close']) / 2
-                print(f"看跌吞没收盘价条件: 当前收盘 < 前K线中点价格: {mid_price_condition}")
+                # 计算阳线实体的2/3位置
+                bull_body_2_3 = first['open'] + (first['close'] - first['open']) * 2/3
                 
-                return basic_condition and price_condition and mid_price_condition
+                # 双K吞没条件：两根阴线的收盘价都低于阳线实体的2/3位置
+                is_bullish_engulfed = (second['close'] < bull_body_2_3 and 
+                                      third['close'] < bull_body_2_3)
+                
+                # 价格位置条件：第三根阴线的最高价接近最近20根K线的最高价
+                price_condition = third['high'] >= recent_20_high * 0.9999
+                
+                print(f"看跌双K吞没条件 - 阳线实体2/3位置: {bull_body_2_3}")
+                print(f"看跌双K吞没条件 - 两根阴线收盘价是否低于阳线2/3: {is_bullish_engulfed}")
+                print(f"看跌双K吞没价格条件: 第三根阴线最高价 >= 最近20根K线最高价: {price_condition}")
+                
+                if is_bullish_engulfed and price_condition:
+                    print("✓ 满足看跌双K吞没条件")
+                    return True
+            
+            # 条件2：看涨双K吞没 - 阴线被后面2根阳线吞没到2/3
+            # 第一根是阴线，第二根和第三根是阳线
+            elif (first['close'] < first['open'] and 
+                  second['close'] > second['open'] and 
+                  third['close'] > third['open']):
+                
+                # 计算阴线实体的2/3位置
+                bear_body_2_3 = first['open'] + (first['close'] - first['open']) * 1/3  # 注意：阴线的2/3位置是从开盘价向下的2/3
+                
+                # 双K吞没条件：两根阳线的收盘价都高于阴线实体的2/3位置
+                is_bearish_engulfed = (second['close'] > bear_body_2_3 and 
+                                      third['close'] > bear_body_2_3)
+                
+                # 价格位置条件：第三根阳线的最低价接近最近20根K线的最低价
+                price_condition = third['low'] <= recent_20_low * 1.0001
+                
+                print(f"看涨双K吞没条件 - 阴线实体2/3位置: {bear_body_2_3}")
+                print(f"看涨双K吞没条件 - 两根阳线收盘价是否高于阴线2/3: {is_bearish_engulfed}")
+                print(f"看涨双K吞没价格条件: 第三根阳线最低价 <= 最近20根K线最低价: {price_condition}")
+                
+                if is_bearish_engulfed and price_condition:
+                    print("✓ 满足看涨双K吞没条件")
+                    return True
         
+        # 未满足任何吞没条件
         return False
     
     def detect_morning_evening_star(self, data):
@@ -646,9 +725,9 @@ class CryptoAnalyzer:
         second = data.iloc[-2]
         third = data.iloc[-1]
         
-        # 计算最近10根K线的高低点
-        recent_10_high = data['high'].tail(10).max()
-        recent_10_low = data['low'].tail(10).min()
+        # 计算最近20根K线的高低点
+        recent_20_high = data['high'].tail(20).max()
+        recent_20_low = data['low'].tail(20).min()
         
         # 计算组合K线的高低点
         pattern_low = min(first['low'], second['low'], third['low'])
@@ -660,7 +739,7 @@ class CryptoAnalyzer:
         print(f"第二根K线: 开盘={second['open']}, 收盘={second['close']}, 最高={second['high']}, 最低={second['low']}")
         print(f"第三根K线: 开盘={third['open']}, 收盘={third['close']}, 最高={third['high']}, 最低={third['low']}")
         print(f"组合K线最低点: {pattern_low}, 组合K线最高点: {pattern_high}")
-        print(f"最近10根K线最高价: {recent_10_high}, 最近10根K线最低价: {recent_10_low}")
+        print(f"最近20根K线最高价: {recent_20_high}, 最近20根K线最低价: {recent_20_low}")
         
         # 晨星条件
         if (first['close'] < first['open'] and  # 第一根是阴线
@@ -1824,7 +1903,8 @@ def check_btc_signal():
         result = analyzer.analyze_single_currency(symbol, 1)
         
         if result:
-            symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval = result
+            # analyze_single_currency现在返回10个值，包含confirmation_candle_type
+            symbol, macd_status, is_golden_cross, four_hour_macd_value, pattern_type, four_hour_macd_bullish, is_buy_signal, is_sell_signal, cross_interval, confirmation_candle_type = result
             
             print(f"\n📊 {symbol} 信号分析结果:")
             print(f"   - 大周期状态: {macd_status} (DIF: {four_hour_macd_value:.6f})")
