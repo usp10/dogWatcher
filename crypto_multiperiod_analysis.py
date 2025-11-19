@@ -342,58 +342,32 @@ class CryptoAnalyzer:
                 four_hour_dea = self.calculate_macd(four_hour_df, 12, 26, 9)[1].iloc[-1]
                 
                 if pattern_type in ["看涨Pinbar", "看涨吞没", "黎明星"]:
-                    # 大周期MACD过滤：当大周期DIF < 0且DIF < DEA时，不触发多头信号
-                    if four_hour_dif < 0 and four_hour_dif < four_hour_dea:
-                        print(f"🚫 {symbol}大周期MACD空头且下行趋势，过滤多头信号")
-                    else:
-                        # 基础买入信号
-                        is_buy_signal = True
-                        signal_reason = f"{pattern_type}"
+                    # 忽略大周期MACD方向，只基于小周期形态生成信号
+                    is_buy_signal = True
+                    signal_reason = f"{pattern_type}"
                 elif pattern_type in ["看跌Pinbar", "看跌吞没", "黄昏星"]:
-                    # 大周期MACD过滤：当大周期DIF > 0且DIF > DEA时，不触发空头信号
-                    if four_hour_dif > 0 and four_hour_dif > four_hour_dea:
-                        print(f"🚫 {symbol}大周期MACD多头且上行趋势，过滤空头信号")
-                    else:
-                        # 基础卖出信号
-                        is_sell_signal = True
-                        signal_reason = f"{pattern_type}"
+                    # 忽略大周期MACD方向，只基于小周期形态生成信号
+                    is_sell_signal = True
+                    signal_reason = f"{pattern_type}"
             else:
                 print(f"   - 无交易信号: {symbol} 当前为无形态，不生成任何交易信号")
             
             # 额外的信号强化条件 - 仅在有形态时生成信号
             # 小周期MACD金叉：强化买入信号
             if is_golden_cross and pattern_type != "无形态":
-                # 大周期MACD过滤：当大周期DIF < 0且DIF < DEA时，不触发多头信号
-                if four_hour_dif < 0 and four_hour_dif < four_hour_dea:
-                    print(f"🚫 {symbol}大周期MACD空头且下行趋势，过滤MACD金叉多头信号")
-                else:
-                    # MACD金叉买入信号
-                    is_buy_signal = True
-                    signal_reason = "小周期MACD金叉"
-                    print(f"✨ {symbol}触发MACD金叉买入信号")
+                # 忽略大周期MACD方向，只基于小周期MACD金叉生成信号
+                is_buy_signal = True
+                signal_reason = "小周期MACD金叉"
+                print(f"✨ {symbol}触发MACD金叉买入信号")
             
             # 小周期MACD死叉：强化卖出信号
             if is_death_cross and pattern_type != "无形态":
-                # 大周期MACD过滤：当大周期DIF > 0且DIF > DEA时，不触发空头信号
-                if four_hour_dif > 0 and four_hour_dif > four_hour_dea:
-                    print(f"🚫 {symbol}大周期MACD多头且上行趋势，过滤MACD死叉空头信号")
-                else:
-                    # MACD死叉卖出信号
-                    is_sell_signal = True
-                    signal_reason = "小周期MACD死叉"
-                    print(f"✨ {symbol}触发MACD死叉卖出信号")
+                # 忽略大周期MACD方向，只基于小周期MACD死叉生成信号
+                is_sell_signal = True
+                signal_reason = "小周期MACD死叉"
+                print(f"✨ {symbol}触发MACD死叉卖出信号")
             
-            # 极值过滤：防止在过大波动后立即交易
-            last_candle_change = float(one_hour_df['price_change_pct'].iloc[-1])
-            if abs(last_candle_change) > 8.0:
-                if is_buy_signal and last_candle_change > 0:
-                    print(f"🚫 {symbol}最后一根K线涨幅过大({last_candle_change:.2f}%)，过滤买入信号")
-                    is_buy_signal = False
-                    signal_reason = ""
-                elif is_sell_signal and last_candle_change < 0:
-                    print(f"🚫 {symbol}最后一根K线跌幅过大({last_candle_change:.2f}%)，过滤卖出信号")
-                    is_sell_signal = False
-                    signal_reason = ""
+            # 极值过滤条件已移除
             
             # 8. 信号确认和日志
             if is_buy_signal:
