@@ -235,7 +235,8 @@ class CryptoAnalyzerOKX:
             if four_hour_df is None:
                 print(f"❌ 错误: {symbol} 4小时K线数据获取失败")
                 return None
-            if len(four_hour_df) < 30:  # 提高数据要求
+            if len(four_hour_df) < 30:
+                # 提高数据要求
                 print(f"⚠️ 警告: {symbol} 4小时K线数据不足 (仅{len(four_hour_df)}条)，建议>=30条")
             
             print(f"   - 获取1小时K线数据...")
@@ -345,11 +346,13 @@ class CryptoAnalyzerOKX:
                 if upper_shadow > 2 * body_size or lower_shadow > 2 * body_size:
                     print(f"✅ {symbol}满足宽松的Pinbar条件")
                     # 直接根据价格位置判断形态
-                    if price_position > 0.6:  # 顶部区域
+                    if price_position > 0.6:
+                # 顶部区域
                         print(f"⚠️ {symbol}在顶部区域，强制识别为看跌Pinbar")
                         potential_pattern_type = "看跌Pinbar"
                         print(f"   - 潜在信号K线形态: {potential_pattern_type} (价格位置: {price_position:.2f} - {position_category})")
-                    elif price_position < 0.4:  # 底部区域
+                    elif price_position < 0.4:
+                # 底部区域
                         print(f"⚠️ {symbol}在底部区域，强制识别为看涨Pinbar")
                         potential_pattern_type = "看涨Pinbar"
                         print(f"   - 潜在信号K线形态: {potential_pattern_type} (价格位置: {price_position:.2f} - {position_category})")
@@ -364,7 +367,8 @@ class CryptoAnalyzerOKX:
                 else:
                     print(f"❌ {symbol}不满足Pinbar条件")
                     # 即使不满足Pinbar条件，如果在顶部区域也尝试识别为看跌形态
-                    if price_position > 0.8:  # 极高位置
+                    if price_position > 0.8:
+                # 极高位置
                         print(f"⚠️ {symbol}在极高价格位置，强制识别为看跌形态")
                         potential_pattern_type = "看跌Pinbar"
                         print(f"   - 潜在信号K线形态: {potential_pattern_type} (价格位置: {price_position:.2f} - {position_category})")
@@ -400,7 +404,8 @@ class CryptoAnalyzerOKX:
                         latest = potential_signal_df.iloc[-1]
                         body = abs(latest['close'] - latest['open'])
                         total_range = latest['high'] - latest['low']
-                        if total_range > 0 and body / total_range < 0.5:  # 可能是Pinbar形态
+                        if total_range > 0 and body / total_range < 0.5:
+                # 可能是Pinbar形态
                             is_bullish = latest['close'] > latest['open']
                             if is_bullish:
                                 lower_shadow = latest['open'] - latest['low']
@@ -724,7 +729,8 @@ class CryptoAnalyzerOKX:
             return False
         
         # 计算影线长度
-        if current['close'] > current['open']:  # 看涨Pinbar
+        if current['close'] > current['open']:
+                # 看涨Pinbar
             lower_shadow = current['open'] - current['low']
             upper_shadow = current['high'] - current['close']
             # 看涨Pinbar：下影线较长，上影线较短
@@ -780,7 +786,8 @@ class CryptoAnalyzerOKX:
             basic_condition = False
             if strict:
                 # 严格条件：当前K线完全吞没前一根K线
-                if current['close'] > current['open']:  # 看涨吞没
+                if current['close'] > current['open']:
+                # 看涨吞没
                     basic_condition = (current['open'] < previous['close'] and 
                                       current['close'] > previous['open'] and 
                                       current_body > previous_body * 1.2)
@@ -793,7 +800,8 @@ class CryptoAnalyzerOKX:
                 basic_condition = current_body > previous_body * 0.667
             
             # 添加价格位置条件
-            if current['close'] > current['open']:  # 看涨吞没
+            if current['close'] > current['open']:
+                # 看涨吞没
                 # 看涨吞没的最低价必须是最近20根K的最低价格（考虑浮点数精度）
                 price_condition = current['low'] <= recent_20_low * 1.0001
                 print(f"看涨吞没价格条件: 当前最低价 <= 最近20根K线最低价: {price_condition}")
@@ -832,9 +840,9 @@ class CryptoAnalyzerOKX:
             print(f"实体长度: 第一根={first_body}, 第二根={second_body}, 第三根={third_body}")
             
             # 条件1：看跌双K吞没 - 阳线被后面2根阴线吞没到2/3
-            if first['close'] > first['open'] and  # 第一根是阳线
-               second['close'] < second['open'] and  # 第二根是阴线
-               third['close'] < third['open']:  # 第三根是阴线
+            if (first['close'] > first['open'] and
+                second['close'] < second['open'] and
+                third['close'] < third['open']):
                 
                 # 计算阳线实体的2/3位置
                 bull_body_2_3 = first['open'] + (first['close'] - first['open']) * 2/3
@@ -855,9 +863,9 @@ class CryptoAnalyzerOKX:
                     return True
             
             # 条件2：看涨双K吞没 - 阴线被后面2根阳线吞没到2/3
-            elif first['close'] < first['open'] and  # 第一根是阴线
-                 second['close'] > second['open'] and  # 第二根是阳线
-                 third['close'] > third['open']:  # 第三根是阳线
+            elif (first['close'] < first['open'] and
+                second['close'] > second['open'] and
+                third['close'] > third['open']):  # 第三根是阳线
                 
                 # 计算阴线实体的2/3位置
                 bear_body_2_3 = first['open'] + (first['close'] - first['open']) * 1/3  # 注意：阴线的2/3位置是从开盘价向下的2/3
@@ -925,7 +933,8 @@ class CryptoAnalyzerOKX:
         engulfing = third_body > second_body * 1.5
         
         # 条件4：第三根K线的收盘价必须超过第一根K线实体的中点
-        if first['close'] > first['open']:  # 第一根是阳线
+        if first['close'] > first['open']:
+                # 第一根是阳线
             mid_point = (first['open'] + first['close']) / 2
             close_beyond_mid = third['close'] < mid_point
         else:  # 第一根是阴线

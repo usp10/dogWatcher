@@ -55,6 +55,16 @@ for pid in $ALL_VARIANTS_PIDS; do
   fi
 done
 
+# 查找并杀死波动监控进程
+VOLATILITY_PIDS=$(ps aux | grep "python volatility_monitor/monitor.py" | grep -v grep | awk '{print $2}')
+for pid in $VOLATILITY_PIDS; do
+  echo "杀死波动监控进程: $pid"
+  kill -9 $pid 2>/dev/null
+  if [ $? -eq 0 ]; then
+    echo "波动监控进程已成功终止"
+  fi
+done
+
 # 方法4: 终极清理 - 终止所有包含crypto的Python进程
 echo "\n执行终极进程清理..."
 FINAL_CLEANUP_PIDS=$(ps aux | grep -E "[p]ython" | grep -E "[c]rypto" | grep -v grep | awk '{print $2}')
@@ -99,7 +109,7 @@ echo "\n正在重新启动脚本..."
 mkdir -p logs
 
 # 启动telegram_commands_bot.py，并将日志输出到文件
-nohup python telegram_commands_bot.py > logs/telegram_bot.log 2>&1 &
+nohup python3 telegram_commands_bot.py > logs/telegram_bot.log 2>&1 &
 TELEGRAM_PID=$!
 
 echo "Telegram机器人已重新启动，PID: $TELEGRAM_PID，日志文件: logs/telegram_bot.log"
@@ -108,15 +118,23 @@ echo "Telegram机器人已重新启动，PID: $TELEGRAM_PID，日志文件: logs
 sleep 3
 
 # 启动币安分析脚本，并将日志输出到文件
-nohup python crypto_multiperiod_analysis.py > logs/binance_analysis.log 2>&1 &
+nohup python3 crypto_multiperiod_analysis.py > logs/binance_analysis.log 2>&1 &
 BINANCE_PID=$!
 
 echo "币安分析脚本已重新启动，PID: $BINANCE_PID"
 
 # 启动OKX分析脚本，并将日志输出到文件
-nohup python crypto_multiperiod_analysis_okx.py > logs/okx_analysis.log 2>&1 &
-OKX_PID=$!
+# nohup python3 crypto_multiperiod_analysis_okx.py > logs/okx_analysis.log 2>&1 &
+# OKX_PID=$!
 
-echo "OKX分析脚本已重新启动，PID: $OKX_PID"
+# echo "OKX分析脚本已重新启动，PID: $OKX_PID"
 
-echo "\n所有操作已完成！三个脚本已重新启动。"
+echo "\n所有操作已完成！Telegram + 币安分析已启动。"
+
+# 启动波动监控
+cd volatility_monitor
+nohup python3 monitor.py > logs/volatility_monitor.log 2>&1 &
+VOLATILITY_PID=$!
+cd ..
+
+echo "波动监控已启动，PID: $VOLATILITY_PID，日志文件: logs/volatility_monitor.log"
