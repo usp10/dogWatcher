@@ -38,6 +38,10 @@ KEEP_MINUTES = 10
 NIGHT_START_HOUR = 2
 NIGHT_END_HOUR = 8
 
+# 电话通知时段配置 (01:00 - 09:00)
+PHONE_CALL_START_HOUR = 1
+PHONE_CALL_END_HOUR = 9
+
 # 夜间连发配置
 NIGHT_MSGS_PER_MINUTE = 10  # 每分钟最多发送10条
 NIGHT_INTERVAL = 6  # 发送间隔6秒 (60秒/10条)
@@ -103,6 +107,11 @@ def is_night_time():
     """判断当前是否为夜间时段 (02:00-08:00)"""
     current_hour = datetime.now().hour
     return NIGHT_START_HOUR <= current_hour < NIGHT_END_HOUR
+
+def is_phone_call_time():
+    """判断是否为电话通知时段 (01:00-09:00)"""
+    current_hour = datetime.now().hour
+    return PHONE_CALL_START_HOUR <= current_hour < PHONE_CALL_END_HOUR
 
 def send_to_dingtalk(message):
     """发送消息到钉钉群"""
@@ -249,11 +258,14 @@ def send_alerts(alerts, repeat_count=1):
     else:
         print("❌ Telegram 语音通话通知发送失败")
 
-    # 饭碗警告电话通知
-    if send_to_fanwan(""):
-        print("✅ 已触发饭碗警告电话通知")
+    # 饭碗警告电话通知（仅在电话通知时段内）
+    if is_phone_call_time():
+        if send_to_fanwan(""):
+            print("✅ 已触发饭碗警告电话通知")
+        else:
+            print("❌ 饭碗警告电话通知发送失败")
     else:
-        print("❌ 饭碗警告电话通知发送失败")
+        print("ℹ️ 非电话通知时段，跳过饭碗电话")
 
 if __name__ == "__main__":
     alerts = check_volatility()
